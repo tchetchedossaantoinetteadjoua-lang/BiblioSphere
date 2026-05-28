@@ -653,10 +653,14 @@ export default function App() {
 
   // FILTER LOGIC
   const filteredBooks = books.filter(b => {
-    const textMatch = b.title.toLowerCase().includes(bookSearch.toLowerCase()) || 
-                      b.isbn.includes(bookSearch) || b.author.toLowerCase().includes(bookSearch.toLowerCase());
-    const catMatch = selectedCategory === 'all' || b.category_id.toString() === selectedCategory;
-    const authorMatch = selectedAuthor === 'all' || b.author_id.toString() === selectedAuthor;
+    const searchLower = bookSearch.trim().toLowerCase();
+    const textMatch = !searchLower || (
+      (b.title && b.title.toLowerCase().includes(searchLower)) ||
+      (b.isbn && String(b.isbn).toLowerCase().includes(searchLower)) ||
+      (b.author && b.author.toLowerCase().includes(searchLower))
+    );
+    const catMatch = selectedCategory === 'all' || (b.category_id && b.category_id.toString() === selectedCategory);
+    const authorMatch = selectedAuthor === 'all' || (b.author_id && b.author_id.toString() === selectedAuthor);
     const availMatch = selectedAvailability === 'all' || 
                        (selectedAvailability === 'available' && b.available_quantity > 0) || 
                        (selectedAvailability === 'unavailable' && b.available_quantity === 0);
@@ -1911,17 +1915,32 @@ export default function App() {
               {/* Filter controls panel */}
               <div className="bg-[#0e1629]/75 backdrop-blur-xl p-4 rounded-2xl border border-slate-800/80 shadow-md flex flex-col md:flex-row gap-4 items-center justify-between">
                 
-                {/* Search text */}
-                <div className="relative w-full md:w-80">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
-                  <input 
-                    id="search-book-input"
-                    type="text" 
-                    placeholder="Titre, ISBN ou Auteur..." 
-                    value={bookSearch}
-                    onChange={(e) => setBookSearch(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 text-xs rounded-xl border border-slate-800/85 bg-[#070b14]/70 outline-none focus:border-violet-500/80 text-slate-100 placeholder-slate-500 transition-all font-medium"
-                  />
+                {/* Search text with live counter */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto flex-1">
+                  <div className="relative flex-1 max-w-md">
+                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-500" />
+                    <input 
+                      id="search-book-input"
+                      type="text" 
+                      placeholder="Recherche en temps réel (Titre, ISBN, Auteur...)" 
+                      value={bookSearch}
+                      onChange={(e) => setBookSearch(e.target.value)}
+                      className="w-full pl-10 pr-10 py-2.5 text-xs rounded-xl border border-slate-800/85 bg-[#070b14]/70 outline-none focus:border-violet-500/80 text-slate-100 placeholder-slate-500 transition-all font-medium shadow-inner"
+                    />
+                    {bookSearch && (
+                      <button
+                        onClick={() => setBookSearch('')}
+                        className="absolute right-3 top-2 text-lg text-slate-500 hover:text-white transition cursor-pointer"
+                        title="Effacer la recherche"
+                      >
+                        &times;
+                      </button>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono bg-[#070b14]/50 border border-slate-800/60 px-3 py-1.5 rounded-lg flex items-center justify-center self-start sm:self-auto gap-1.5 whitespace-nowrap">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    {filteredBooks.length} {filteredBooks.length > 1 ? 'livres trouvés' : 'livre trouvé'}
+                  </span>
                 </div>
 
                 {/* Multicriteria filters */}

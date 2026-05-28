@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -1144,7 +1143,12 @@ const api = express.Router();
 api.get('/auth/check-admin', async (req, res) => {
   let adminExists = false;
   try {
-    if (pool) {
+    if (supabase) {
+      const { data, error } = await supabase.from('users').select('id').eq('role', 'admin').limit(1);
+      if (!error && data && data.length > 0) {
+        adminExists = true;
+      }
+    } else if (pool) {
       const [rows] = await pool.query<any[]>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
       if (rows[0] && rows[0].count > 0) {
         adminExists = true;
@@ -2236,6 +2240,7 @@ async function startServer() {
 
   if (!isProduction) {
     console.log("Starting Full-stack Server in DEVELOPMENT Mode with Live Watch...");
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
