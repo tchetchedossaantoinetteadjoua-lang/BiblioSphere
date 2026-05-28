@@ -1,27 +1,39 @@
 import express from 'express';
+import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import mysql from 'mysql2/promise';
-import { supabase } from './api/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
-// Safe __dirname for both ESM (local dev) and CJS (Vercel serverless)
-let __filename_safe: string;
-let __dirname_safe: string;
-try {
-  __filename_safe = fileURLToPath(import.meta.url);
-  __dirname_safe = path.dirname(__filename_safe);
-} catch {
-  __filename_safe = __filename ?? process.cwd();
-  __dirname_safe = __dirname ?? process.cwd();
-}
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
+
+// Initialize Supabase Client (Highest Priority Database Mode if configured)
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+let supabase: any = null;
+
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  try {
+    supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      }
+    });
+    console.log("Supabase Client successfully initialized & ready to roll.");
+  } catch (err) {
+    console.error("Failed to initialize Supabase client:", err);
+  }
+}
 
 // Initialize Database Connection Pool (Dual-mode: falls back gracefully if not configured)
 let pool: mysql.Pool | null = null;
@@ -343,77 +355,7 @@ async function recalculatePenalties() {
   const dailyRate = 500; // 500 FCFA per day
   const now = new Date();
   
-  if (supabase) {
-    try {
-      // Find all active or overdue borrowings
-      const { data: borrows, error: borrowError } = await supabase
-        .from('borrowings')
-        .select('*')
-        .in('status', ['active', 'overdue'])
-        .is('returned_at', null);
-
-      if (borrowError) {
-        console.error("Supabase Error fetching borrowings for recalculation:", borrowError);
-        throw borrowError;
-      }
-
-      for (const b of (borrows || [])) {
-        const dueDate = new Date(b.due_date);
-        if (now > dueDate) {
-          const diffTime = Math.abs(now.getTime() - dueDate.getTime());
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          const amount = diffDays * dailyRate;
-
-          // Update borrowing status to overdue
-          const { error: updateError } = await supabase
-            .from('borrowings')
-            .update({ status: 'overdue' })
-            .eq('id', b.id);
-          if (updateError) {
-            console.error(`Supabase Error updating borrowing #${b.id} to overdue:`, updateError);
-            throw updateError;
-          }
-
-          // Check if penalty exists
-          const { data: existingPenalties, error: penaltyErr } = await supabase
-            .from('penalties')
-            .select('id')
-            .eq('borrowing_id', b.id);
-          if (penaltyErr) {
-            console.error(`Supabase Error checking penalty for borrowing #${b.id}:`, penaltyErr);
-            throw penaltyErr;
-          }
-
-          if (existingPenalties && existingPenalties.length > 0) {
-            const { error: uErr } = await supabase
-              .from('penalties')
-              .update({ days_overdue: diffDays, amount: amount })
-              .eq('borrowing_id', b.id);
-            if (uErr) {
-              console.error(`Supabase Error updating penalty for borrowing #${b.id}:`, uErr);
-              throw uErr;
-            }
-          } else {
-            const { error: iErr } = await supabase
-              .from('penalties')
-              .insert([{
-                borrowing_id: b.id,
-                user_id: b.user_id,
-                amount: amount,
-                days_overdue: diffDays,
-                status: 'unpaid'
-              }]);
-            if (iErr) {
-              console.error(`Supabase Error inserting penalty for borrowing #${b.id}:`, iErr);
-              throw iErr;
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error("Error recalculating Supabase penalties:", err);
-    }
-  } else if (pool) {
+  if (pool) {
     try {
       // Find all active or overdue borrowings
       const [borrows] = await pool.query<any[]>(
@@ -549,17 +491,17 @@ const db = {
       }
       return (data || []).map((u: any) => ({
         ...u,
-        password_hash: u.password,
-        membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
+        membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type,
+        password_hash: u.password
       }));
     }
     if (pool) {
       const [rows] = await pool.query<any[]>(
         "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users"
       );
-      return rows.map((r: any) => ({
-        ...r,
-        membership_type: r.membership_type === 'Classic' ? 'Standard' : r.membership_type
+      return (rows || []).map((u: any) => ({
+        ...u,
+        membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
       })) as User[];
     }
     return users;
@@ -574,8 +516,8 @@ const db = {
       }
       return data ? {
         ...data,
-        password_hash: data.password,
-        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type
+        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
+        password_hash: data.password
       } : null;
     }
     if (pool) {
@@ -583,10 +525,14 @@ const db = {
         "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users WHERE id = ?",
         [id]
       );
-      return rows.length > 0 ? {
-        ...rows[0],
-        membership_type: rows[0].membership_type === 'Classic' ? 'Standard' : rows[0].membership_type
-      } as User : null;
+      if (rows.length > 0) {
+        const u = rows[0];
+        return {
+          ...u,
+          membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
+        } as User;
+      }
+      return null;
     }
     return users.find(u => u.id === id) || null;
   },
@@ -600,8 +546,8 @@ const db = {
       }
       return data ? {
         ...data,
-        password_hash: data.password,
-        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type
+        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
+        password_hash: data.password
       } : null;
     }
     if (pool) {
@@ -609,10 +555,14 @@ const db = {
         "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users WHERE email = ?",
         [email]
       );
-      return rows.length > 0 ? {
-        ...rows[0],
-        membership_type: rows[0].membership_type === 'Classic' ? 'Standard' : rows[0].membership_type
-      } as User : null;
+      if (rows.length > 0) {
+        const u = rows[0];
+        return {
+          ...u,
+          membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
+        } as User;
+      }
+      return null;
     }
     return users.find(u => u.email.toLowerCase() === email.toLowerCase()) || null;
   },
@@ -635,8 +585,8 @@ const db = {
       }
       return {
         ...data,
-        password_hash: data.password,
-        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type
+        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
+        password_hash: data.password
       };
     }
     if (pool) {
@@ -645,7 +595,11 @@ const db = {
         [u.firstname, u.lastname, u.email, u.password_hash, u.role, u.status, dbMembership]
       );
       const insertId = result.insertId;
-      return { id: insertId, ...u };
+      return {
+        id: insertId,
+        ...u,
+        membership_type: dbMembership === 'Classic' ? 'Standard' : dbMembership
+      };
     }
     const newUser = { id: users.length + 1, ...u };
     users.push(newUser);
@@ -1115,7 +1069,7 @@ const db = {
   // --- NOTIFICATIONS ---
   async getNotifications(): Promise<Notification[]> {
     if (supabase) {
-      const { data, error } = await supabase.from('notifications').select('*').order('id', { ascending: false });
+      const { data, error } = await supabase.supabase ? await supabase.from('notifications').select('*').order('id', { ascending: false }) : await supabase.from('notifications').select('*').order('id', { ascending: false });
       const notificationsData = data || [];
       return notificationsData.map((n: any) => ({
         ...n,
@@ -1188,21 +1142,21 @@ const api = express.Router();
 
 // ---------------- AUTHENTIFICATION ----------------
 api.get('/auth/check-admin', async (req, res) => {
+  let adminExists = false;
   try {
-    const { count, error } = await supabase
-      .from('users')
-      .select('*', { count: 'exact', head: true })
-      .eq('role', 'admin');
-
-    if (error) {
-      return res.status(400).json({ error: error.message });
+    if (pool) {
+      const [rows] = await pool.query<any[]>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
+      if (rows[0] && rows[0].count > 0) {
+        adminExists = true;
+      }
+    } else {
+      adminExists = users.some(u => u.role === 'admin');
     }
-
-    const adminExists = count !== null && count > 0;
-    return res.json({ adminExists });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message || "Erreur interne du serveur lors de la vérification de l'administrateur." });
+  } catch (err) {
+    console.error("Error checking admin count in DB:", err);
+    adminExists = users.some(u => u.role === 'admin');
   }
+  return res.json({ adminExists });
 });
 
 api.post('/auth/register', async (req, res) => {
@@ -1216,81 +1170,83 @@ api.post('/auth/register', async (req, res) => {
 
     // 1. Check single admin constraint
     if (userRole === 'admin') {
-      const { count, error: adminCheckError } = await supabase
-        .from('users')
-        .select('*', { count: 'exact', head: true })
-        .eq('role', 'admin');
-
-      if (adminCheckError) {
-        return res.status(400).json({ error: adminCheckError.message });
+      let adminExists = false;
+      try {
+        if (pool) {
+          const [rows] = await pool.query<any[]>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
+          if (rows[0] && rows[0].count > 0) {
+            adminExists = true;
+          }
+        } else {
+          adminExists = users.some(u => u.role === 'admin');
+        }
+      } catch (err) {
+        adminExists = users.some(u => u.role === 'admin');
       }
 
-      if (count && count > 0) {
+      if (adminExists) {
         return res.status(400).json({ error: "Un compte administrateur existe déjà dans le système. Vous ne pouvez pas en créer un deuxième." });
       }
     }
 
     // 2. Check for unique email
-    const { data: existingUser, error: emailCheckError } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email.trim())
-      .maybeSingle();
-
-    if (emailCheckError) {
-      return res.status(400).json({ error: emailCheckError.message });
-    }
-
-    if (existingUser) {
+    const existing = await db.getUserByEmail(email);
+    if (existing) {
       return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
     }
 
-    // 3. Set up subscription expiration
+    const newUser: User = {
+      id: users.length + 1,
+      firstname,
+      lastname,
+      email,
+      phone: phone || '',
+      address: address || '',
+      membership_type: membership_type || 'Standard',
+      status: 'active',
+      role: userRole,
+      password_hash: password
+    };
+
+    // Register in DB companion
+    const savedUser = await db.addUser(newUser);
+
+    // Auto Create subscription (for local memory, DB seeding covers real scenarios)
     const start = new Date();
     const expire = new Date();
     expire.setFullYear(start.getFullYear() + 1);
 
-    const dbMembership = membership_type === 'Standard' ? 'Classic' : (membership_type || 'Classic');
+    subscriptions.push({
+      id: subscriptions.length + 1,
+      user_id: savedUser.id,
+      type: savedUser.membership_type,
+      starts_at: start.toISOString(),
+      expires_at: expire.toISOString(),
+      status: 'active'
+    });
 
-    // 4. Insert user into Supabase
-    const { data: savedUser, error: insertError } = await supabase
-      .from('users')
-      .insert([{
-        firstname,
-        lastname,
-        email: email.trim(),
-        password: password, // Store password (matches schema)
-        role: userRole,
-        status: 'active',
-        membership_type: dbMembership,
-        subscription_expires_at: expire.toISOString()
-      }])
-      .select()
-      .single();
-
-    if (insertError) {
-      return res.status(400).json({ error: insertError.message });
-    }
-
-    // 5. Log audit trail in Supabase
-    await supabase.from('audit_logs').insert([{
+    // Log action
+    await db.addAuditLog({
       user: "Système",
       action: "Inscription de compte",
-      target: `${savedUser.firstname} ${savedUser.lastname} (${savedUser.role.toUpperCase()})`
-    }]);
+      target: `${savedUser.firstname} ${savedUser.lastname} (${savedUser.role.toUpperCase()})`,
+      timestamp: new Date().toISOString()
+    });
 
-    // 6. Create welcome notification in Supabase
-    await supabase.from('notifications').insert([{
+    // Welcome Notification
+    await db.addNotification({
       user_id: savedUser.id,
       title: "Compte créé avec succès !",
       message: `Votre compte (${savedUser.role === 'admin' ? 'Administrateur' : savedUser.role === 'librarian' ? 'Bibliothécaire' : 'Membre'}) est officiellement actif.`,
-      type: 'success',
-      is_read: false
-    }]);
+      type: "success",
+      is_read: false,
+      created_at: new Date().toISOString()
+    });
 
     return res.json({ token: "sanctum_mock_token_" + savedUser.id, user: savedUser });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message || "Erreur interne du serveur lors de la création du compte." });
+  } catch (err: any) {
+    console.error("Critical error in /auth/register:", err);
+    return res.status(500).json({ error: err.message || "Erreur interne lors de la création du compte." });
   }
 });
 
@@ -1312,40 +1268,27 @@ api.post('/auth/logout', (req, res) => {
 
 // ---------------- GESTION DES LIVRES ----------------
 api.get('/books', async (req, res) => {
-  try {
-    const { data: booksData, error: booksError } = await supabase
-      .from('books')
-      .select('*, authors(name, bio), categories(name)');
+  await recalculatePenalties();
+  
+  const allBooks = await db.getBooks();
+  const allAuthors = await db.getAuthors();
+  const allCategories = await db.getCategories();
+  const allReservations = await db.getReservations();
 
-    if (booksError) {
-      return res.status(400).json({ error: booksError.message });
-    }
-
-    // Fetch reservations to calculate reservations_count per book
-    const { data: resData, error: resError } = await supabase
-      .from('reservations')
-      .select('book_id')
-      .eq('status', 'pending');
-
-    if (resError) {
-      return res.status(400).json({ error: resError.message });
-    }
-
-    const enriched = (booksData || []).map((b: any) => {
-      const reservationsCount = (resData || []).filter((r: any) => r.book_id === b.id).length;
-      return {
-        ...b,
-        author: b.authors?.name || "Auteur inconnu",
-        author_bio: b.authors?.bio || "",
-        category: b.categories?.name || "Général",
-        reservations_count: reservationsCount
-      };
-    });
-
-    return res.json(enriched);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message || "Erreur interne du serveur lors de la récupération des livres." });
-  }
+  // enrich books with author and category details
+  const enriched = allBooks.map(b => {
+    const author = allAuthors.find(a => a.id === b.author_id);
+    const category = allCategories.find(c => c.id === b.category_id);
+    const reservations_count = allReservations.filter(r => r.book_id === b.id && r.status === 'pending').length;
+    return {
+      ...b,
+      author: author ? author.name : "Auteur inconnu",
+      author_bio: author ? author.bio : "",
+      category: category ? category.name : "Général",
+      reservations_count
+    };
+  });
+  return res.json(enriched);
 });
 
 api.post('/books/upload-pdf', async (req, res) => {
@@ -1359,27 +1302,39 @@ api.post('/books/upload-pdf', async (req, res) => {
     const extension = fileName.split('.').pop() || 'pdf';
     const storagePath = `${cleanTitle}_${Date.now()}.${extension}`;
 
-    console.log(`Uploading ${fileName} to Supabase Storage bucket 'book-pdfs'...`);
-    const bucketName = 'book-pdfs';
-    
-    const fileBuffer = Buffer.from(fileBase64, 'base64');
-    const { data, error } = await supabase.storage
-      .from(bucketName)
-      .upload(storagePath, fileBuffer, {
-        contentType: 'application/pdf',
-        upsert: true
-      });
+    if (supabase) {
+      console.log(`Uploading ${fileName} to Supabase Storage bucket 'book-pdfs'...`);
+      const bucketName = 'book-pdfs';
+      
+      const fileBuffer = Buffer.from(fileBase64, 'base64');
+      const { data, error } = await supabase.storage
+        .from(bucketName)
+        .upload(storagePath, fileBuffer, {
+          contentType: 'application/pdf',
+          upsert: true
+        });
 
-    if (error) {
-      console.error("Supabase storage upload error:", error);
-      return res.status(500).json({ error: `Erreur d'upload storage Supabase : ${error.message}` });
+      if (error) {
+        console.error("Supabase storage upload error:", error);
+        return res.status(500).json({ error: `Erreur d'upload storage Supabase : ${error.message}` });
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(storagePath);
+
+      return res.json({ pdf_url: publicUrlData.publicUrl });
+    } else {
+      // Local fallback
+      console.log(`Saving ${fileName} to local uploads folder...`);
+      const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+      const localPath = path.join(uploadsDir, storagePath);
+      fs.writeFileSync(localPath, Buffer.from(fileBase64, 'base64'));
+      return res.json({ pdf_url: `/uploads/${storagePath}` });
     }
-
-    const { data: publicUrlData } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(storagePath);
-
-    return res.json({ pdf_url: publicUrlData.publicUrl });
   } catch (err: any) {
     console.error("Critical error inside /books/upload-pdf:", err);
     return res.status(500).json({ error: err.message || "Erreur critique d'upload." });
@@ -1533,36 +1488,41 @@ api.get('/members', async (req, res) => {
 });
 
 api.post('/members', async (req, res) => {
-  const { firstname, lastname, email, phone, address, membership_type, status } = req.body;
-  if (!firstname || !lastname || !email) {
-    return res.status(400).json({ error: "Tous les champs obligatoires doivent être remplis." });
+  try {
+    const { firstname, lastname, email, phone, address, membership_type, status } = req.body;
+    if (!firstname || !lastname || !email) {
+      return res.status(400).json({ error: "Tous les champs obligatoires doivent être remplis." });
+    }
+
+    const existing = await db.getUserByEmail(email);
+    if (existing) {
+      return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
+    }
+
+    const savedUser = await db.addUser({
+      firstname,
+      lastname,
+      email,
+      phone: phone || '',
+      address: address || '',
+      membership_type: membership_type || 'Standard',
+      status: status || 'active',
+      role: 'member',
+      password_hash: "secretpwd"
+    });
+
+    await db.addAuditLog({
+      user: "Sophie Dubois",
+      action: "Création de membre",
+      target: `${savedUser.firstname} ${savedUser.lastname}`,
+      timestamp: new Date().toISOString()
+    });
+
+    return res.json(savedUser);
+  } catch (err: any) {
+    console.error("Critical error in /members post:", err);
+    return res.status(500).json({ error: err.message || "Erreur interne lors de la création du membre." });
   }
-
-  const existing = await db.getUserByEmail(email);
-  if (existing) {
-    return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
-  }
-
-  const savedUser = await db.addUser({
-    firstname,
-    lastname,
-    email,
-    phone: phone || '',
-    address: address || '',
-    membership_type: membership_type || 'Standard',
-    status: status || 'active',
-    role: 'member',
-    password_hash: "secretpwd"
-  });
-
-  await db.addAuditLog({
-    user: "Sophie Dubois",
-    action: "Création de membre",
-    target: `${savedUser.firstname} ${savedUser.lastname}`,
-    timestamp: new Date().toISOString()
-  });
-
-  return res.json(savedUser);
 });
 
 api.delete('/members/:id', async (req, res) => {
@@ -2271,12 +2231,10 @@ app.use('/api', api);
 const port = 3000;
 
 async function startServer() {
-  const isProduction = process.env.NODE_ENV === 'production' || fs.existsSync(path.join(__dirname_safe, 'dist'));
+  const isProduction = process.env.NODE_ENV === 'production' || fs.existsSync(path.join(__dirname, 'dist'));
 
   if (!isProduction) {
     console.log("Starting Full-stack Server in DEVELOPMENT Mode with Live Watch...");
-    // Dynamic import: vite is only loaded in dev mode, never on Vercel
-    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
@@ -2287,7 +2245,7 @@ async function startServer() {
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
       try {
-        let template = fs.readFileSync(path.resolve(__dirname_safe, 'index.html'), 'utf-8');
+        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
         template = await vite.transformIndexHtml(url, template);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
       } catch (e) {
@@ -2297,9 +2255,9 @@ async function startServer() {
     });
   } else {
     console.log("Starting Full-stack Server in PRODUCTION Mode...");
-    app.use(express.static(path.join(__dirname_safe, 'dist')));
+    app.use(express.static(path.join(__dirname, 'dist')));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname_safe, 'dist', 'index.html'));
+      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     });
   }
 
@@ -2317,4 +2275,3 @@ if (!process.env.VERCEL) {
 }
 
 export default app;
-
