@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -10,8 +9,16 @@ import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Safe __dirname for both ESM (local dev) and CJS (Vercel serverless)
+let __filename_safe: string;
+let __dirname_safe: string;
+try {
+  __filename_safe = fileURLToPath(import.meta.url);
+  __dirname_safe = path.dirname(__filename_safe);
+} catch {
+  __filename_safe = __filename ?? process.cwd();
+  __dirname_safe = __dirname ?? process.cwd();
+}
 
 const app = express();
 app.use(express.json());
@@ -2279,10 +2286,12 @@ app.use('/api', api);
 const port = 3000;
 
 async function startServer() {
-  const isProduction = process.env.NODE_ENV === 'production' || fs.existsSync(path.join(__dirname, 'dist'));
+  const isProduction = process.env.NODE_ENV === 'production' || fs.existsSync(path.join(__dirname_safe, 'dist'));
 
   if (!isProduction) {
     console.log("Starting Full-stack Server in DEVELOPMENT Mode with Live Watch...");
+    // Dynamic import: vite is only loaded in dev mode, never on Vercel
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa'
@@ -2293,7 +2302,7 @@ async function startServer() {
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
       try {
-        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        let template = fs.readFileSync(path.resolve(__dirname_safe, 'index.html'), 'utf-8');
         template = await vite.transformIndexHtml(url, template);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
       } catch (e) {
@@ -2303,9 +2312,9 @@ async function startServer() {
     });
   } else {
     console.log("Starting Full-stack Server in PRODUCTION Mode...");
-    app.use(express.static(path.join(__dirname, 'dist')));
+    app.use(express.static(path.join(__dirname_safe, 'dist')));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(__dirname_safe, 'dist', 'index.html'));
     });
   }
 
@@ -2323,3 +2332,4 @@ if (!process.env.VERCEL) {
 }
 
 export default app;
+
