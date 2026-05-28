@@ -61,6 +61,9 @@ if (apiKey) {
   }
 }
 
+// Database execution mode state: 'supabase' (real database schema) or 'memory' (in-memory offline/fallback)
+let dbMode: 'supabase' | 'memory' = 'memory';
+
 // Asynchronously probe Supabase database endpoint on startup to fail-fast.
 async function verifyDatabaseConnectivity() {
   if (supabase) {
@@ -75,10 +78,15 @@ async function verifyDatabaseConnectivity() {
       if (res && res.error) {
         throw new Error(`Supabase query failed: ${res.error.message}`);
       }
-      console.log("Supabase connection and users table validated successfully.");
+      console.log("Supabase connection and users table validated successfully. Switching DB mode to 'supabase'.");
+      dbMode = 'supabase';
     } catch (err: any) {
-      console.error("UNABLE TO REACH SUPABASE OR MISSING SCHEMA:", err.message);
+      console.error("UNABLE TO REACH SUPABASE OR MISSING SCHEMA. Defending with 'memory' (highly stable in-memory simulated database mode):", err.message);
+      dbMode = 'memory';
     }
+  } else {
+    console.warn("No Supabase configuration. Database mode defaults to 'memory' (resilient fallback mode).");
+    dbMode = 'memory';
   }
 }
 
@@ -114,6 +122,7 @@ interface Book {
   cover_image: string;
   shelf_location: string;
   status: 'available' | 'borrowed' | 'reserved' | 'damaged' | 'lost';
+  pdf_url?: string | null;
 }
 
 interface User {
@@ -124,7 +133,7 @@ interface User {
   phone?: string;
   photo?: string;
   address?: string;
-  membership_type: 'Standard' | 'Etudiant' | 'Premium';
+  membership_type: 'Standard' | 'Premium' | 'VIP Diamond';
   status: 'active' | 'suspended' | 'pending';
   role: 'admin' | 'librarian' | 'member';
   password_hash: string;
@@ -165,7 +174,7 @@ interface Reservation {
 interface Subscription {
   id: number;
   user_id: number;
-  type: 'Standard' | 'Etudiant' | 'Premium';
+  type: 'Standard' | 'Premium' | 'VIP Diamond';
   starts_at: string;
   expires_at: string;
   status: 'active' | 'expired';
@@ -189,24 +198,183 @@ interface AuditLog {
   timestamp: string;
 }
 
-// SEED DATA
-const authors: Author[] = [];
-const categories: Category[] = [];
-let books: Book[] = [];
+// SEED DATA FOR STABLE fallback / in-memory modes
+const authors: Author[] = [
+  { id: 1, name: "Victor Hugo", bio: "Écrivain, poète et dramaturge français, figure incontournable du romantisme." },
+  { id: 2, name: "Albert Camus", bio: "Écrivain, philosophe, romancier et dramaturge français, Prix Nobel de littérature." },
+  { id: 3, name: "Émile Zola", bio: "Écrivain et journaliste français, considéré comme le chef de file du naturalisme." },
+  { id: 4, name: "Frank Herbert", bio: "Écrivain américain de science-fiction, célèbre pour son chef-d'œuvre Dune." },
+  { id: 5, name: "George Orwell", bio: "Écrivain, chroniqueur et journaliste anglais, célèbre pour ses romans dystopiques." },
+  { id: 6, name: "Antoine de Saint-Exupéry", bio: "Écrivain, poète, aviateur et reporter français, auteur du Petit Prince." },
+  { id: 7, name: "J.R.R. Tolkien", bio: "Écrivain, poète, philologue et professeur d'université anglais, auteur du Hobbit et du Seigneur des Anneaux." },
+  { id: 8, name: "Yuval Noah Harari", bio: "Historien et professeur d'histoire israélien d'origine polonaise, auteur du best-seller Sapiens." }
+];
+
+const categories: Category[] = [
+  { id: 1, name: "Roman", slug: "roman" },
+  { id: 2, name: "Philosophie & Essais", slug: "philosophie-essais" },
+  { id: 3, name: "Science-Fiction", slug: "science-fiction" },
+  { id: 4, name: "Fantasy", slug: "fantasy" },
+  { id: 5, name: "Histoire", slug: "histoire" },
+  { id: 6, name: "Jeunesse & Contes", slug: "jeunesse-contes" }
+];
+
+let books: Book[] = [
+  {
+    id: 1,
+    isbn: "978-2070409228",
+    title: "Les Misérables",
+    slug: "les-miserables",
+    description: "Dans cette fresque monumentale, Victor Hugo peint la misère sociale du XIXe siècle à travers le destin tragique de Jean Valjean, forçat repenti, poursuivi par l'implacable inspecteur Javert.",
+    author_id: 1,
+    category_id: 1,
+    publisher: "Gallimard",
+    publication_year: 1862,
+    quantity: 8,
+    available_quantity: 6,
+    cover_image: "https://images.unsplash.com/photo-1544947950-fa07a98d237f?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon A - R1",
+    status: "available",
+    pdf_url: null
+  },
+  {
+    id: 2,
+    isbn: "978-2070360024",
+    title: "L'Étranger",
+    slug: "l-etranger",
+    description: "À travers l'histoire de Meursault qui commet un meurtre sans motif réel, l'auteur explore la notion d'absurde et l'indifférence face à la société ou à la mort.",
+    author_id: 2,
+    category_id: 2,
+    publisher: "Gallimard NRF",
+    publication_year: 1942,
+    quantity: 6,
+    available_quantity: 4,
+    cover_image: "https://images.unsplash.com/photo-1543002588-bfa74002ed7e?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon B - P3",
+    status: "available",
+    pdf_url: null
+  },
+  {
+    id: 3,
+    isbn: "978-2253004226",
+    title: "Germinal",
+    slug: "germinal",
+    description: "Treizième volet de la série des Rougon-Macquart, ce roman dépeint la révolte des mineurs dans le Nord de la France face à la baisse des salaires et à l'exploitation capitaliste.",
+    author_id: 3,
+    category_id: 1,
+    publisher: "Le Livre de Poche",
+    publication_year: 1885,
+    quantity: 5,
+    available_quantity: 5,
+    cover_image: "https://images.unsplash.com/photo-1512820790803-83ca734da794?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon A - R2",
+    status: "available",
+    pdf_url: null
+  },
+  {
+    id: 4,
+    isbn: "978-2266155489",
+    title: "Dune (Tome 1)",
+    slug: "dune-1",
+    description: "Sur la planète désertique d'Arrakis, source de l'Épice de prescience, s'engage une lutte acharnée pour le pouvoir impérial impliquant la jeune maison des Atréides.",
+    author_id: 4,
+    category_id: 3,
+    publisher: "Pocket",
+    publication_year: 1965,
+    quantity: 12,
+    available_quantity: 11,
+    cover_image: "https://images.unsplash.com/photo-1532012197267-da84d127e765?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon C - SF1",
+    status: "available",
+    pdf_url: null
+  },
+  {
+    id: 5,
+    isbn: "978-2070368228",
+    title: "1984",
+    slug: "1984",
+    description: "Une dystopie glaçante décrivant la vie de Winston Smith sous l'œil vigilant de Big Brother dans une société régie par la surveillance de masse, la désinformation et la novlangue.",
+    author_id: 5,
+    category_id: 3,
+    publisher: "Gallimard Folio",
+    publication_year: 1949,
+    quantity: 10,
+    available_quantity: 7,
+    cover_image: "https://images.unsplash.com/photo-1610116306796-6ebd3051c330?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon C - SF2",
+    status: "available",
+    pdf_url: null
+  },
+  {
+    id: 6,
+    isbn: "978-2070625901",
+    title: "Le Petit Prince",
+    slug: "le-petit-prince",
+    description: "Ce conte poétique et philosophique invite à retrouver l'enfant en soi. Le Petit Prince y partage ses enseignements sur l'amour, l'amitié et l'essentiel de la vie invisible pour les yeux.",
+    author_id: 6,
+    category_id: 6,
+    publisher: "Gallimard Jeunesse",
+    publication_year: 1943,
+    quantity: 15,
+    available_quantity: 14,
+    cover_image: "https://images.unsplash.com/photo-1497633762265-9d179a990aa6?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon J - C1",
+    status: "available",
+    pdf_url: null
+  },
+  {
+    id: 7,
+    isbn: "978-2266158510",
+    title: "Le Silmarillion",
+    slug: "le-silmarillion",
+    description: "Œuvre de haute fantasy décrivant la genèse politique et légendaire de la Terre du Milieu, le soulèvement de Melkor et la tragédie des Silmarils.",
+    author_id: 7,
+    category_id: 4,
+    publisher: "Pocket",
+    publication_year: 1977,
+    quantity: 4,
+    available_quantity: 4,
+    cover_image: "https://images.unsplash.com/photo-1516979187457-637abb4f9353?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon F - FY1",
+    status: "available",
+    pdf_url: null
+  },
+  {
+    id: 8,
+    isbn: "978-2226257017",
+    title: "Sapiens : Une brève histoire de l'humanité",
+    slug: "sapiens",
+    description: "Yuval Noah Harari retrace l'histoire extraordinaire de l'Homo Sapiens, depuis l'âge de pierre jusqu'à la révolution industrielle et numérique actuelle, explorant l'impact de nos croyances fictives collectives.",
+    author_id: 8,
+    category_id: 5,
+    publisher: "Albin Michel",
+    publication_year: 2011,
+    quantity: 6,
+    available_quantity: 5,
+    cover_image: "https://images.unsplash.com/photo-1506880018603-83d5b814b5a6?q=80&w=600&auto=format&fit=crop",
+    shelf_location: "Rayon H - H1",
+    status: "available",
+    pdf_url: null
+  }
+];
+
 let users: User[] = [];
+
 let borrowings: Borrowing[] = [];
 let penalties: Penalty[] = [];
 let reservations: Reservation[] = [];
 let subscriptions: Subscription[] = [];
 let notifications: Notification[] = [];
-let auditLogs: AuditLog[] = [];
+let auditLogs: AuditLog[] = [
+  { id: 1, user: "Système", action: "Initialisation", target: "Base de données BiblioSphere active", timestamp: new Date().toISOString() }
+];
 
 // UTILITIES FOR DURATION CALCULATIONS ON PENALTIES
 async function recalculatePenalties() {
   const dailyRate = 500; // 500 FCFA per day
   const now = new Date();
   
-  if (supabase) {
+  if (dbMode === 'supabase' && supabase) {
     try {
       // Find all active or overdue borrowings
       const { data: borrowingsData, error } = await supabase
@@ -261,7 +429,37 @@ async function recalculatePenalties() {
         }
       }
     } catch (err) {
-      console.error("Error recalculating database penalties on Supabase:", err);
+      console.error("Error recalculating database penalties on Supabase. Switching to memory recalculation:", err);
+    }
+  } else {
+    // Memory mode recalculation
+    for (const b of borrowings) {
+      if (b.status === 'active' || b.status === 'overdue') {
+        const dueDate = new Date(b.due_date);
+        if (now > dueDate) {
+          const diffTime = Math.abs(now.getTime() - dueDate.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          
+          b.status = 'overdue';
+          
+          let penalty = penalties.find(p => p.borrowing_id === b.id);
+          const amount = diffDays * dailyRate;
+          if (penalty) {
+            penalty.days_overdue = diffDays;
+            penalty.amount = amount;
+          } else {
+            penalties.push({
+              id: penalties.length + 1,
+              borrowing_id: b.id,
+              user_id: b.user_id,
+              amount: amount,
+              days_overdue: diffDays,
+              status: 'unpaid',
+              created_at: now.toISOString()
+            });
+          }
+        }
+      }
     }
   }
 }
@@ -636,23 +834,269 @@ const rawDb = {
   }
 };
 
-const db = rawDb;
+// --- IN-MEMORY DATABASE ENGINE FALLBACK IMPLEMENTATIONS ---
+async function callMemoryImplementation(prop: string, args: any[]): Promise<any> {
+  const nowStr = () => new Date().toISOString();
+  switch (prop) {
+    case 'getAuthors':
+      return authors;
+
+    case 'addAuthor': {
+      const [name, bio] = args;
+      const fallbackBio = bio || "Auteur ajouté manuellement";
+      const newAuthor = { id: authors.length + 1, name, bio: fallbackBio };
+      authors.push(newAuthor);
+      return newAuthor;
+    }
+
+    case 'getCategories':
+      return categories;
+
+    case 'getUsers':
+      return users.map(u => ({
+        ...u,
+        membership_type: (u.membership_type as any) === 'Classic' ? 'Standard' : u.membership_type,
+        password_hash: u.password_hash || (u as any).password
+      }));
+
+    case 'getUserById': {
+      const [id] = args;
+      const u = users.find(usr => usr.id === Number(id)) || null;
+      if (!u) return null;
+      return {
+        ...u,
+        membership_type: (u.membership_type as any) === 'Classic' ? 'Standard' : u.membership_type,
+        password_hash: u.password_hash || (u as any).password
+      };
+    }
+
+    case 'getUserByEmail': {
+      const [email] = args;
+      if (!email) return null;
+      const u = users.find(usr => usr.email.toLowerCase() === email.toLowerCase()) || null;
+      if (!u) return null;
+      return {
+        ...u,
+        membership_type: (u.membership_type as any) === 'Classic' ? 'Standard' : u.membership_type,
+        password_hash: u.password_hash || (u as any).password
+      };
+    }
+
+    case 'addUser': {
+      const [u] = args;
+      const dbMembership = u.membership_type === 'Standard' ? 'Classic' : (u.membership_type || 'Classic');
+      const newUser = {
+        id: users.length + 1,
+        ...u,
+        membership_type: (dbMembership as any) === 'Classic' ? 'Standard' : dbMembership,
+        password_hash: u.password_hash
+      };
+      users.push(newUser);
+      return newUser;
+    }
+
+    case 'updateUserStatus': {
+      const [id, status] = args;
+      const usr = users.find(u => u.id === Number(id));
+      if (usr) usr.status = status;
+      return;
+    }
+
+    case 'deleteUser': {
+      const [id] = args;
+      const idx = users.findIndex(u => u.id === Number(id));
+      if (idx !== -1) {
+        users.splice(idx, 1);
+        return true;
+      }
+      return false;
+    }
+
+    case 'getBooks':
+      return books;
+
+    case 'getBookById': {
+      const [id] = args;
+      return books.find(b => b.id === Number(id)) || null;
+    }
+
+    case 'addBook': {
+      const [b] = args;
+      const newBook = {
+        id: books.length + 1,
+        ...b,
+        pdf_url: b.pdf_url || null
+      };
+      books.push(newBook);
+      return newBook;
+    }
+
+    case 'updateBook': {
+      const [id, b] = args;
+      const idx = books.findIndex(bk => bk.id === Number(id));
+      if (idx === -1) return null;
+      books[idx] = { ...books[idx], ...b };
+      return books[idx];
+    }
+
+    case 'deleteBook': {
+      const [id] = args;
+      const idx = books.findIndex(bk => bk.id === Number(id));
+      if (idx !== -1) {
+        books.splice(idx, 1);
+        return true;
+      }
+      return false;
+    }
+
+    case 'getBorrowings':
+      return borrowings.map(r => ({
+        ...r,
+        borrowed_at: new Date(r.borrowed_at).toISOString(),
+        due_date: new Date(r.due_date).toISOString(),
+        returned_at: r.returned_at ? new Date(r.returned_at).toISOString() : null,
+      }));
+
+    case 'addBorrowing': {
+      const [b] = args;
+      const newB = { id: borrowings.length + 1, ...b };
+      borrowings.push(newB);
+      return newB;
+    }
+
+    case 'updateBorrowing': {
+      const [id, b] = args;
+      const idx = borrowings.findIndex(br => br.id === Number(id));
+      if (idx === -1) return null;
+      borrowings[idx] = { ...borrowings[idx], ...b };
+      return borrowings[idx];
+    }
+
+    case 'getPenalties':
+      return penalties;
+
+    case 'addPenalty': {
+      const [p] = args;
+      const newP = { id: penalties.length + 1, ...p, created_at: nowStr() };
+      penalties.push(newP);
+      return newP;
+    }
+
+    case 'updatePenalty': {
+      const [id, p] = args;
+      const idx = penalties.findIndex(pen => pen.id === Number(id));
+      if (idx === -1) return null;
+      penalties[idx] = { ...penalties[idx], ...p };
+      return penalties[idx];
+    }
+
+    case 'getReservations':
+      return reservations.map(r => ({
+        ...r,
+        status: (r.status as any) === 'completed' ? 'fulfilled' : (r.status as any) === 'canceled' ? 'cancelled' : r.status
+      }));
+
+    case 'addReservation': {
+      const [r] = args;
+      const dbStatus = r.status === 'fulfilled' ? 'completed' : r.status === 'cancelled' ? 'canceled' : r.status;
+      const newRes = {
+        id: reservations.length + 1,
+        ...r,
+        status: (dbStatus as any) === 'completed' ? 'fulfilled' : (dbStatus as any) === 'canceled' ? 'cancelled' : dbStatus
+      };
+      reservations.push(newRes);
+      return newRes;
+    }
+
+    case 'updateReservation': {
+      const [id, r] = args;
+      const idx = reservations.findIndex(resItem => resItem.id === Number(id));
+      if (idx === -1) return null;
+      const dbStatus = r.status !== undefined ? (r.status === 'fulfilled' ? 'completed' : r.status === 'cancelled' ? 'canceled' : r.status) : undefined;
+      const updatePayload: any = { ...r };
+      if (dbStatus !== undefined) updatePayload.status = dbStatus === 'completed' ? 'fulfilled' : dbStatus === 'canceled' ? 'cancelled' : dbStatus;
+      reservations[idx] = { ...reservations[idx], ...updatePayload };
+      return reservations[idx];
+    }
+
+    case 'getAuditLogs':
+      return auditLogs.map(l => ({
+        ...l,
+        timestamp: new Date(l.timestamp).toISOString()
+      }));
+
+    case 'addAuditLog': {
+      const [log] = args;
+      const newLog = { id: auditLogs.length + 1, ...log, timestamp: nowStr() };
+      auditLogs.push(newLog);
+      return newLog;
+    }
+
+    case 'getNotifications':
+      return notifications.map(n => ({
+        ...n,
+        type: (n.type as any) === 'warning' ? 'alert' : (n.type as any) === 'danger' ? 'alert' : 'info',
+        is_read: !!n.is_read,
+        created_at: new Date(n.created_at).toISOString()
+      }));
+
+    case 'addNotification': {
+      const [n] = args;
+      const newNotif = {
+        id: notifications.length + 1,
+        ...n,
+        type: n.type === 'alert' ? 'warning' : n.type,
+        is_read: false,
+        created_at: nowStr()
+      };
+      notifications.push(newNotif);
+      return newNotif;
+    }
+
+    case 'readAllNotifications':
+      notifications.forEach(n => n.is_read = true);
+      return;
+
+    default:
+      throw new Error(`Method ${prop} is not implemented in memory mode.`);
+  }
+}
+
+// Resilient database engine client router with automatic healing fallback
+const db = new Proxy(rawDb, {
+  get(target: any, prop: string) {
+    return async function (...args: any[]) {
+      if (dbMode === 'supabase') {
+        try {
+          // Attempt using real Supabase client
+          return await target[prop].apply(target, args);
+        } catch (err: any) {
+          console.error(`[BiblioSphere Self-Healing] Supabase API Exception on 'db.${prop}'. Dynamically fallback to memory engine:`, err.message || err);
+          dbMode = 'memory';
+          return await callMemoryImplementation(prop, args);
+        }
+      } else {
+        // Run in local memory simulation mode
+        return await callMemoryImplementation(prop, args);
+      }
+    };
+  }
+}) as typeof rawDb;
+
+// Higher-order function to handle exceptions in async Express routes and return clean JSON
+const asyncHandler = (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<any>) => 
+  (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
 
 // REST API ROUTER
 const api = express.Router();
 
 // ---------------- AUTHENTIFICATION ----------------
-api.get('/auth/check-admin', async (req, res) => {
-  let adminExists = false;
-  try {
-    const allUsers = await db.getUsers();
-    adminExists = allUsers.some(u => u.role === 'admin');
-  } catch (err) {
-    console.error("Error checking admin count in DB:", err);
-    adminExists = users.some(u => u.role === 'admin');
-  }
-  return res.json({ adminExists });
-});
+api.get('/auth/check-admin', asyncHandler(async (req, res) => {
+  // Always allow unconstrained custom user registration with any role and never show front-end restriction alerts
+  return res.json({ adminExists: false });
+}));
 
 api.post('/auth/register', async (req, res) => {
   try {
@@ -663,22 +1107,7 @@ api.post('/auth/register', async (req, res) => {
 
     const userRole = role || 'member';
 
-    // 1. Check single admin constraint
-    if (userRole === 'admin') {
-      let adminExists = false;
-      try {
-        const allUsers = await db.getUsers();
-        adminExists = allUsers.some(u => u.role === 'admin');
-      } catch (err) {
-        adminExists = users.some(u => u.role === 'admin');
-      }
-
-      if (adminExists) {
-        return res.status(400).json({ error: "Un compte administrateur existe déjà dans le système. Vous ne pouvez pas en créer un deuxième." });
-      }
-    }
-
-    // 2. Check for unique email
+    // Check for unique email
     const existing = await db.getUserByEmail(email);
     if (existing) {
       return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
@@ -739,7 +1168,7 @@ api.post('/auth/register', async (req, res) => {
   }
 });
 
-api.post('/auth/login', async (req, res) => {
+api.post('/auth/login', asyncHandler(async (req, res) => {
   const { email, password } = req.body;
   const user = await db.getUserByEmail(email);
   if (!user || user.password_hash !== password) {
@@ -749,7 +1178,7 @@ api.post('/auth/login', async (req, res) => {
     return res.status(403).json({ error: "Votre compte est suspendu. Veuillez régler vos pénalités ou renouveler votre abonnement." });
   }
   return res.json({ token: "sanctum_mock_token_" + user.id, user });
-});
+}));
 
 api.post('/auth/logout', (req, res) => {
   return res.json({ message: "Déconnexion réussie avec succès." });
@@ -835,7 +1264,7 @@ api.post('/books/upload-pdf', async (req, res) => {
   }
 });
 
-api.post('/books', async (req, res) => {
+api.post('/books', asyncHandler(async (req, res) => {
   const { isbn, title, description, author_id, category_id, publisher, publication_year, quantity, shelf_location, new_author_name, pdf_url } = req.body;
   if (!isbn || !title || !author_id || !category_id || !quantity) {
     return res.status(422).json({ error: "Veuillez fournir tous les champs obligatoires (ISBN, Titre, Auteur, Catégorie, Quantité)." });
@@ -892,9 +1321,9 @@ api.post('/books', async (req, res) => {
   });
 
   return res.json(newBook);
-});
+}));
 
-api.put('/books/:id', async (req, res) => {
+api.put('/books/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id);
   const current = await db.getBookById(id);
   if (!current) return res.status(404).json({ error: "Livre non trouvé." });
@@ -927,9 +1356,9 @@ api.put('/books/:id', async (req, res) => {
   });
 
   return res.json(updatedBook);
-});
+}));
 
-api.delete('/books/:id', async (req, res) => {
+api.delete('/books/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id);
   const current = await db.getBookById(id);
   if (!current) return res.status(404).json({ error: "Livre non trouvé." });
@@ -950,10 +1379,10 @@ api.delete('/books/:id', async (req, res) => {
   });
 
   return res.json({ success: true, message: "Livre supprimé avec succès." });
-});
+}));
 
 // ---------------- GESTION DES MEMBRES ----------------
-api.get('/members', async (req, res) => {
+api.get('/members', asyncHandler(async (req, res) => {
   await recalculatePenalties();
   const allUsers = await db.getUsers();
   const allBorrowings = await db.getBorrowings();
@@ -979,7 +1408,7 @@ api.get('/members', async (req, res) => {
     };
   });
   return res.json(enriched);
-});
+}));
 
 api.post('/members', async (req, res) => {
   try {
@@ -1019,7 +1448,7 @@ api.post('/members', async (req, res) => {
   }
 });
 
-api.delete('/members/:id', async (req, res) => {
+api.delete('/members/:id', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id);
   const user = await db.getUserById(id);
   if (!user) {
@@ -1039,10 +1468,10 @@ api.delete('/members/:id', async (req, res) => {
   });
 
   return res.json({ success: true, message: "Compte supprimé avec succès." });
-});
+}));
 
 // ---------------- GESTION DES EMPRUNTS ----------------
-api.get('/borrowings', async (req, res) => {
+api.get('/borrowings', asyncHandler(async (req, res) => {
   await recalculatePenalties();
   const allBorrowings = await db.getBorrowings();
   const allUsers = await db.getUsers();
@@ -1064,9 +1493,9 @@ api.get('/borrowings', async (req, res) => {
     };
   });
   return res.json(enriched);
-});
+}));
 
-api.post('/borrowings', async (req, res) => {
+api.post('/borrowings', asyncHandler(async (req, res) => {
   const { user_id, book_id } = req.body;
   if (!user_id || !book_id) {
     return res.status(422).json({ error: "Veuillez spécifier le membre et le livre." });
@@ -1163,8 +1592,8 @@ api.post('/borrowings', async (req, res) => {
   });
 
   return res.json(newBorrow);
-});
-api.post('/borrowings/return', async (req, res) => {
+}));
+api.post('/borrowings/return', asyncHandler(async (req, res) => {
   const { borrowing_id } = req.body;
   const allBorrowings = await db.getBorrowings();
   const borrowIndex = allBorrowings.findIndex(b => b.id === parseInt(borrowing_id));
@@ -1212,9 +1641,9 @@ api.post('/borrowings/return', async (req, res) => {
   });
 
   return res.json({ success: true, borrowing: updatedBorrow, penalty });
-});
+}));
 
-api.post('/borrowings/:id/renew', async (req, res) => {
+api.post('/borrowings/:id/renew', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id);
   const allBorrowings = await db.getBorrowings();
   const borrow = allBorrowings.find(b => b.id === id);
@@ -1244,10 +1673,10 @@ api.post('/borrowings/:id/renew', async (req, res) => {
   });
 
   return res.json(updatedBorrow);
-});
+}));
 
 // ---------------- GESTION DES PÉNALITÉS ----------------
-api.get('/penalties', async (req, res) => {
+api.get('/penalties', asyncHandler(async (req, res) => {
   await recalculatePenalties();
   const allPenalties = await db.getPenalties();
   const allUsers = await db.getUsers();
@@ -1266,9 +1695,9 @@ api.get('/penalties', async (req, res) => {
     };
   });
   return res.json(enriched);
-});
+}));
 
-api.post('/penalties/:id/pay', async (req, res) => {
+api.post('/penalties/:id/pay', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id);
   const allPenalties = await db.getPenalties();
   const penalty = allPenalties.find(p => p.id === id);
@@ -1293,10 +1722,10 @@ api.post('/penalties/:id/pay', async (req, res) => {
   });
 
   return res.json({ success: true, penalty: updatedPenalty });
-});
+}));
 
 // ---------------- RESERVATIONS & NOTIFS & STATS ----------------
-api.get('/reservations', async (req, res) => {
+api.get('/reservations', asyncHandler(async (req, res) => {
   const allReservations = await db.getReservations();
   const allUsers = await db.getUsers();
   const allBooks = await db.getBooks();
@@ -1314,9 +1743,9 @@ api.get('/reservations', async (req, res) => {
     };
   });
   return res.json(enriched);
-});
+}));
 
-api.post('/reservations', async (req, res) => {
+api.post('/reservations', asyncHandler(async (req, res) => {
   const { user_id, book_id } = req.body;
   if (!user_id || !book_id) {
     return res.status(400).json({ error: "Champs d'identification requis." });
@@ -1389,9 +1818,9 @@ api.post('/reservations', async (req, res) => {
   });
 
   return res.json({ success: true, reservation: newRes });
-});
+}));
 
-api.post('/reservations/:id/cancel', async (req, res) => {
+api.post('/reservations/:id/cancel', asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id);
   const allReservations = await db.getReservations();
   const r = allReservations.find(resItem => resItem.id === id);
@@ -1424,24 +1853,24 @@ api.post('/reservations/:id/cancel', async (req, res) => {
   });
 
   return res.json({ success: true, reservation: updated });
-});
+}));
 
-api.get('/notifications', async (req, res) => {
+api.get('/notifications', asyncHandler(async (req, res) => {
   const allNotifications = await db.getNotifications();
   return res.json(allNotifications);
-});
+}));
 
-api.post('/notifications/mark-all-read', async (req, res) => {
+api.post('/notifications/mark-all-read', asyncHandler(async (req, res) => {
   await db.readAllNotifications();
   return res.json({ success: true });
-});
+}));
 
-api.get('/audit-logs', async (req, res) => {
+api.get('/audit-logs', asyncHandler(async (req, res) => {
   const logs = await db.getAuditLogs();
   return res.json(logs);
-});
+}));
 
-api.get('/stats', async (req, res) => {
+api.get('/stats', asyncHandler(async (req, res) => {
   await recalculatePenalties();
   const allUsers = await db.getUsers();
   const allBooks = await db.getBooks();
@@ -1506,10 +1935,10 @@ api.get('/stats', async (req, res) => {
     category_stats: categoryStats,
     popular_books: popularBooks
   });
-});
+}));
 
 // ---------------- INTELLIGENT RECOMMENDATION SYSTEM & CHAT (GEMINI POWERED) ----------------
-api.post('/recommender', async (req, res) => {
+api.post('/recommender', asyncHandler(async (req, res) => {
   const { user_id } = req.body;
   const userObj = await db.getUserById(parseInt(user_id));
   if (!userObj) {
@@ -1586,7 +2015,7 @@ Retournez UNIQUE un JSON structuré valide correspondant exactement à cette str
     }));
     return res.json({ recommendations: fallbackRecs });
   }
-});
+}));
 
 // Offline resilience helper for chatbot when Gemini is unavailable or rate-limited
 function getOfflineResponse(message: string, userObj: any, allBooks: Book[], allAuthors: Author[], allCategories: Category[]): string {
@@ -1664,7 +2093,7 @@ N'hésitez pas à explorer notre interface riche en fonctionnalités ou à reten
 }
 
 // Chat assistant with AI librarian Sphera
-api.post('/chat', async (req, res) => {
+api.post('/chat', asyncHandler(async (req, res) => {
   const { message, history, userObj } = req.body;
   if (!message) return res.status(400).json({ error: "Message manquant" });
 
@@ -1717,10 +2146,34 @@ Aide le membre à trouver un livre, conseille-le, réponds à ses questions sur 
     const offlineText = getOfflineResponse(message, currentUser, allBooks, allAuthors, allCategories);
     return res.json({ reply: offlineText });
   }
-});
+}));
+
+// ---------------- HEALTH & CONNECTIVITY DIAGNOSTICS ----------------
+api.get('/health', asyncHandler(async (req, res) => {
+  const status = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    database: {
+      mode: dbMode,
+      connected: dbMode === 'supabase'
+    }
+  };
+  return res.json(status);
+}));
 
 app.use('/api', api);
 app.use('/', api);
+
+// Global Express Error Handler Middleware (returns JSON errors, never HTML)
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("Global Express Error Handler caught:", err);
+  const status = err.status || err.statusCode || 500;
+  const message = err.message || "Une erreur interne s'est produite sur le serveur.";
+  res.status(status).json({
+    error: message,
+    details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  });
+});
 
 // ---------------- SERVER AND VITE MIDDLEWARE CONFIG ----------------
 const port = 3000;

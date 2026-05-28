@@ -5,7 +5,11 @@
 -- ARCHITECTURE DE TYPE RELATIONNELLE - REGLES D'INTEGRITE SERRÉES
 -- =============================================================================
 
-CREATE DATABASE IF NOT EXISTS `bibliosphere` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- =============================================================================
+-- SCRIPT DE NETTOYAGE PROPRE DE TOUTE LA BASE DE DONNEES (RESET COMPLET)
+-- =============================================================================
+DROP DATABASE IF EXISTS `bibliosphere`;
+CREATE DATABASE `bibliosphere` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `bibliosphere`;
 
 -- Désactiver les clés étrangères pour éliminer les conflits d'ordre lors de l'écrasement potentiel

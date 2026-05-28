@@ -233,38 +233,47 @@ export default function App() {
   const fetchAllData = async () => {
     try {
       const bRes = await fetch('/api/books');
+      if (!bRes.ok) throw new Error(`L'API /api/books a renvoyé le statut ${bRes.status}`);
       const booksData = await bRes.json();
       setBooks(booksData);
 
       const mRes = await fetch('/api/members');
+      if (!mRes.ok) throw new Error(`L'API /api/members a renvoyé le statut ${mRes.status}`);
       const memsData = await mRes.json();
       setMembers(memsData);
 
       const brRes = await fetch('/api/borrowings');
+      if (!brRes.ok) throw new Error(`L'API /api/borrowings a renvoyé le statut ${brRes.status}`);
       const borrowsData = await brRes.json();
       setBorrowings(borrowsData);
 
       const pRes = await fetch('/api/penalties');
+      if (!pRes.ok) throw new Error(`L'API /api/penalties a renvoyé le statut ${pRes.status}`);
       const penaltiesData = await pRes.json();
       setPenalties(penaltiesData);
 
       const nRes = await fetch('/api/notifications');
+      if (!nRes.ok) throw new Error(`L'API /api/notifications a renvoyé le statut ${nRes.status}`);
       const listNotifs = await nRes.json();
       setNotifications(listNotifs);
 
       const logRes = await fetch('/api/audit-logs');
+      if (!logRes.ok) throw new Error(`L'API /api/audit-logs a renvoyé le statut ${logRes.status}`);
       const systemLogs = await logRes.json();
       setAuditLogs(systemLogs);
 
       const rRes = await fetch('/api/reservations');
+      if (!rRes.ok) throw new Error(`L'API /api/reservations a renvoyé le statut ${rRes.status}`);
       const resData = await rRes.json();
       setReservations(resData);
 
       const statsRes = await fetch('/api/stats');
+      if (!statsRes.ok) throw new Error(`L'API /api/stats a renvoyé le statut ${statsRes.status}`);
       const systemStats = await statsRes.json();
       setStats(systemStats);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error connecting with simulated REST API:", e);
+      showFeedback(e.message || "Erreur de connexion avec le serveur.", "danger");
     }
   };
 
