@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import mysql from 'mysql2/promise';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from './api/lib/supabase';
 
 dotenv.config();
 
@@ -22,25 +22,6 @@ try {
 
 const app = express();
 app.use(express.json());
-
-// Initialize Supabase Client (Highest Priority Database Mode if configured)
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
-let supabase: any = null;
-
-if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
-  try {
-    supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      }
-    });
-    console.log("Supabase Client successfully initialized & ready to roll.");
-  } catch (err) {
-    console.error("Failed to initialize Supabase client:", err);
-  }
-}
 
 // Initialize Database Connection Pool (Dual-mode: falls back gracefully if not configured)
 let pool: mysql.Pool | null = null;
@@ -1207,107 +1188,110 @@ const api = express.Router();
 
 // ---------------- AUTHENTIFICATION ----------------
 api.get('/auth/check-admin', async (req, res) => {
-  let adminExists = false;
   try {
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
-      if (rows[0] && rows[0].count > 0) {
-        adminExists = true;
-      }
-    } else {
-      adminExists = users.some(u => u.role === 'admin');
+    const { count, error } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true })
+      .eq('role', 'admin');
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
     }
-  } catch (err) {
-    console.error("Error checking admin count in DB:", err);
-    adminExists = users.some(u => u.role === 'admin');
+
+    const adminExists = count !== null && count > 0;
+    return res.json({ adminExists });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Erreur interne du serveur lors de la vérification de l'administrateur." });
   }
-  return res.json({ adminExists });
 });
 
 api.post('/auth/register', async (req, res) => {
-  const { firstname, lastname, email, password, phone, address, membership_type, role } = req.body;
-  if (!firstname || !lastname || !email || !password) {
-    return res.status(400).json({ error: "Tous les champs obligatoires doivent être remplis." });
-  }
+  try {
+    const { firstname, lastname, email, password, phone, address, membership_type, role } = req.body;
+    if (!firstname || !lastname || !email || !password) {
+      return res.status(400).json({ error: "Tous les champs obligatoires doivent être remplis." });
+    }
 
-  const userRole = role || 'member';
+    const userRole = role || 'member';
 
-  // 1. Check single admin constraint
-  if (userRole === 'admin') {
-    let adminExists = false;
-    try {
-      if (pool) {
-        const [rows] = await pool.query<any[]>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
-        if (rows[0] && rows[0].count > 0) {
-          adminExists = true;
-        }
-      } else {
-        adminExists = users.some(u => u.role === 'admin');
+    // 1. Check single admin constraint
+    if (userRole === 'admin') {
+      const { count, error: adminCheckError } = await supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('role', 'admin');
+
+      if (adminCheckError) {
+        return res.status(400).json({ error: adminCheckError.message });
       }
-    } catch (err) {
-      adminExists = users.some(u => u.role === 'admin');
+
+      if (count && count > 0) {
+        return res.status(400).json({ error: "Un compte administrateur existe déjà dans le système. Vous ne pouvez pas en créer un deuxième." });
+      }
     }
 
-    if (adminExists) {
-      return res.status(400).json({ error: "Un compte administrateur existe déjà dans le système. Vous ne pouvez pas en créer un deuxième." });
+    // 2. Check for unique email
+    const { data: existingUser, error: emailCheckError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email.trim())
+      .maybeSingle();
+
+    if (emailCheckError) {
+      return res.status(400).json({ error: emailCheckError.message });
     }
+
+    if (existingUser) {
+      return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
+    }
+
+    // 3. Set up subscription expiration
+    const start = new Date();
+    const expire = new Date();
+    expire.setFullYear(start.getFullYear() + 1);
+
+    const dbMembership = membership_type === 'Standard' ? 'Classic' : (membership_type || 'Classic');
+
+    // 4. Insert user into Supabase
+    const { data: savedUser, error: insertError } = await supabase
+      .from('users')
+      .insert([{
+        firstname,
+        lastname,
+        email: email.trim(),
+        password: password, // Store password (matches schema)
+        role: userRole,
+        status: 'active',
+        membership_type: dbMembership,
+        subscription_expires_at: expire.toISOString()
+      }])
+      .select()
+      .single();
+
+    if (insertError) {
+      return res.status(400).json({ error: insertError.message });
+    }
+
+    // 5. Log audit trail in Supabase
+    await supabase.from('audit_logs').insert([{
+      user: "Système",
+      action: "Inscription de compte",
+      target: `${savedUser.firstname} ${savedUser.lastname} (${savedUser.role.toUpperCase()})`
+    }]);
+
+    // 6. Create welcome notification in Supabase
+    await supabase.from('notifications').insert([{
+      user_id: savedUser.id,
+      title: "Compte créé avec succès !",
+      message: `Votre compte (${savedUser.role === 'admin' ? 'Administrateur' : savedUser.role === 'librarian' ? 'Bibliothécaire' : 'Membre'}) est officiellement actif.`,
+      type: 'success',
+      is_read: false
+    }]);
+
+    return res.json({ token: "sanctum_mock_token_" + savedUser.id, user: savedUser });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Erreur interne du serveur lors de la création du compte." });
   }
-
-  // 2. Check for unique email
-  const existing = await db.getUserByEmail(email);
-  if (existing) {
-    return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
-  }
-
-  const newUser: User = {
-    id: users.length + 1,
-    firstname,
-    lastname,
-    email,
-    phone: phone || '',
-    address: address || '',
-    membership_type: membership_type || 'Standard',
-    status: 'active',
-    role: userRole,
-    password_hash: password
-  };
-
-  // Register in DB companion
-  const savedUser = await db.addUser(newUser);
-
-  // Auto Create subscription (for local memory, DB seeding covers real scenarios)
-  const start = new Date();
-  const expire = new Date();
-  expire.setFullYear(start.getFullYear() + 1);
-
-  subscriptions.push({
-    id: subscriptions.length + 1,
-    user_id: savedUser.id,
-    type: savedUser.membership_type,
-    starts_at: start.toISOString(),
-    expires_at: expire.toISOString(),
-    status: 'active'
-  });
-
-  // Log action
-  await db.addAuditLog({
-    user: "Système",
-    action: "Inscription de compte",
-    target: `${savedUser.firstname} ${savedUser.lastname} (${savedUser.role.toUpperCase()})`,
-    timestamp: new Date().toISOString()
-  });
-
-  // Welcome Notification
-  await db.addNotification({
-    user_id: savedUser.id,
-    title: "Compte créé avec succès !",
-    message: `Votre compte (${savedUser.role === 'admin' ? 'Administrateur' : savedUser.role === 'librarian' ? 'Bibliothécaire' : 'Membre'}) est officiellement actif.`,
-    type: "success",
-    is_read: false,
-    created_at: new Date().toISOString()
-  });
-
-  return res.json({ token: "sanctum_mock_token_" + savedUser.id, user: savedUser });
 });
 
 api.post('/auth/login', async (req, res) => {
@@ -1328,27 +1312,40 @@ api.post('/auth/logout', (req, res) => {
 
 // ---------------- GESTION DES LIVRES ----------------
 api.get('/books', async (req, res) => {
-  await recalculatePenalties();
-  
-  const allBooks = await db.getBooks();
-  const allAuthors = await db.getAuthors();
-  const allCategories = await db.getCategories();
-  const allReservations = await db.getReservations();
+  try {
+    const { data: booksData, error: booksError } = await supabase
+      .from('books')
+      .select('*, authors(name, bio), categories(name)');
 
-  // enrich books with author and category details
-  const enriched = allBooks.map(b => {
-    const author = allAuthors.find(a => a.id === b.author_id);
-    const category = allCategories.find(c => c.id === b.category_id);
-    const reservations_count = allReservations.filter(r => r.book_id === b.id && r.status === 'pending').length;
-    return {
-      ...b,
-      author: author ? author.name : "Auteur inconnu",
-      author_bio: author ? author.bio : "",
-      category: category ? category.name : "Général",
-      reservations_count
-    };
-  });
-  return res.json(enriched);
+    if (booksError) {
+      return res.status(400).json({ error: booksError.message });
+    }
+
+    // Fetch reservations to calculate reservations_count per book
+    const { data: resData, error: resError } = await supabase
+      .from('reservations')
+      .select('book_id')
+      .eq('status', 'pending');
+
+    if (resError) {
+      return res.status(400).json({ error: resError.message });
+    }
+
+    const enriched = (booksData || []).map((b: any) => {
+      const reservationsCount = (resData || []).filter((r: any) => r.book_id === b.id).length;
+      return {
+        ...b,
+        author: b.authors?.name || "Auteur inconnu",
+        author_bio: b.authors?.bio || "",
+        category: b.categories?.name || "Général",
+        reservations_count: reservationsCount
+      };
+    });
+
+    return res.json(enriched);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || "Erreur interne du serveur lors de la récupération des livres." });
+  }
 });
 
 api.post('/books/upload-pdf', async (req, res) => {
