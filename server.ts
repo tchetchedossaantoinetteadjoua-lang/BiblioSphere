@@ -2226,12 +2226,13 @@ Aide le membre à trouver un livre, conseille-le, réponds à ses questions sur 
 });
 
 app.use('/api', api);
+app.use('/', api);
 
 // ---------------- SERVER AND VITE MIDDLEWARE CONFIG ----------------
 const port = 3000;
 
 async function startServer() {
-  const isProduction = process.env.NODE_ENV === 'production' || fs.existsSync(path.join(__dirname, 'dist'));
+  const isProduction = process.env.NODE_ENV === 'production' || (typeof __filename !== 'undefined' && (__filename.endsWith('.cjs') || __filename.includes('dist')));
 
   if (!isProduction) {
     console.log("Starting Full-stack Server in DEVELOPMENT Mode with Live Watch...");
@@ -2245,7 +2246,7 @@ async function startServer() {
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
       try {
-        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        let template = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8');
         template = await vite.transformIndexHtml(url, template);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
       } catch (e) {
@@ -2255,9 +2256,10 @@ async function startServer() {
     });
   } else {
     console.log("Starting Full-stack Server in PRODUCTION Mode...");
-    app.use(express.static(path.join(__dirname, 'dist')));
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 

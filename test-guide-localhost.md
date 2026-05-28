@@ -111,3 +111,10 @@ Pour évaluer les différents types de privilèges (RBAC) sur l'interface, utili
 
 *   **Erreur `Port 3306 occupé` :** WampServer utilise parfois le port `3307` par défaut pour éviter les conflits si vous avez déjà un autre service MySQL d'installé. Dans ce cas, modifiez la valeur de `DB_PORT` dans le fichier `.env` ou testez la connexion sur le port alternative.
 *   **Permissions d'accès (CORS) :** Si vous connectez React à l'API Laravel physique sur des ports séparés (ex: 3000 et 8000), vérifiez que la configuration CORS de Laravel dans `config/cors.php` autorise l'origine `http://localhost:3000`.
+
+---
+
+## ⚡ Autre Option : Déploiement Cloud Serverless (Vercel)
+Si vous souhaitez déployer **BiblioSphere** sur **Vercel** en cloud ou le tester localement avec l'émulateur Vercel `vercel dev`, consultez le guide dédié :
+📂 **[GUIDE_DEPLOY_VERCEL.md](./GUIDE_DEPLOY_VERCEL.md)**
+

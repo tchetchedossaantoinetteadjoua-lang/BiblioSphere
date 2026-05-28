@@ -185,4 +185,8 @@ npm install
 npm run dev
 ```
 
+### Déploiement Cloud Serverless (Vercel) :
+Pour déployer rapidement BiblioSphere sur l'infrastructure Vercel (en local via `vercel dev` ou en production via `vercel --prod`), veuillez vous référer au document complet et riche :
+📂 **[GUIDE_DEPLOY_VERCEL.md](./GUIDE_DEPLOY_VERCEL.md)**
+
 Grâce à son architecture, la communication asynchrone est prête et sécurisée. BiblioSphere est prêt au déploiement !
