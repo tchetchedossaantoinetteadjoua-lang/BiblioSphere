@@ -1359,39 +1359,27 @@ api.post('/books/upload-pdf', async (req, res) => {
     const extension = fileName.split('.').pop() || 'pdf';
     const storagePath = `${cleanTitle}_${Date.now()}.${extension}`;
 
-    if (supabase) {
-      console.log(`Uploading ${fileName} to Supabase Storage bucket 'book-pdfs'...`);
-      const bucketName = 'book-pdfs';
-      
-      const fileBuffer = Buffer.from(fileBase64, 'base64');
-      const { data, error } = await supabase.storage
-        .from(bucketName)
-        .upload(storagePath, fileBuffer, {
-          contentType: 'application/pdf',
-          upsert: true
-        });
+    console.log(`Uploading ${fileName} to Supabase Storage bucket 'book-pdfs'...`);
+    const bucketName = 'book-pdfs';
+    
+    const fileBuffer = Buffer.from(fileBase64, 'base64');
+    const { data, error } = await supabase.storage
+      .from(bucketName)
+      .upload(storagePath, fileBuffer, {
+        contentType: 'application/pdf',
+        upsert: true
+      });
 
-      if (error) {
-        console.error("Supabase storage upload error:", error);
-        return res.status(500).json({ error: `Erreur d'upload storage Supabase : ${error.message}` });
-      }
-
-      const { data: publicUrlData } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(storagePath);
-
-      return res.json({ pdf_url: publicUrlData.publicUrl });
-    } else {
-      // Local fallback
-      console.log(`Saving ${fileName} to local uploads folder...`);
-      const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-      const localPath = path.join(uploadsDir, storagePath);
-      fs.writeFileSync(localPath, Buffer.from(fileBase64, 'base64'));
-      return res.json({ pdf_url: `/uploads/${storagePath}` });
+    if (error) {
+      console.error("Supabase storage upload error:", error);
+      return res.status(500).json({ error: `Erreur d'upload storage Supabase : ${error.message}` });
     }
+
+    const { data: publicUrlData } = supabase.storage
+      .from(bucketName)
+      .getPublicUrl(storagePath);
+
+    return res.json({ pdf_url: publicUrlData.publicUrl });
   } catch (err: any) {
     console.error("Critical error inside /books/upload-pdf:", err);
     return res.status(500).json({ error: err.message || "Erreur critique d'upload." });

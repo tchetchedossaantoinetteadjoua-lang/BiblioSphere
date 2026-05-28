@@ -241,7 +241,7 @@ export default function App() {
       } else {
         const text = await res.text();
         if (text.includes("The page could not be found") || text.includes("<html")) {
-          errMsg = `Le serveur a renvoyé une page d'erreur (404/500). Veuillez vérifier que le serveur est démarré.`;
+          errMsg = `Erreur de connexion avec le serveur de production. Veuillez réessayer dans quelques instants.`;
         } else {
           errMsg = text || errMsg;
         }
@@ -266,7 +266,7 @@ export default function App() {
       setReservations(await safeFetchJson('/api/reservations'));
       setStats(await safeFetchJson('/api/stats'));
     } catch (e: any) {
-      console.error("Error connecting with simulated REST API:", e);
+      console.error("Error connecting with production REST API:", e);
     }
   };
 
