@@ -22,7 +22,8 @@ import {
   TrendingUp, 
   Folder, 
   QrCode, 
-  RefreshCcw, 
+  RefreshCcw,
+  History, 
   CreditCard,
   Send,
   Sliders,
@@ -217,6 +218,7 @@ export default function App() {
 
   const [showQrCodeModal, setShowQrCodeModal] = useState<boolean>(false);
   const [selectedQrCodeItem, setSelectedQrCodeItem] = useState<any>(null);
+  const [selectedHistoryMember, setSelectedHistoryMember] = useState<any | null>(null);
 
   // NOTIFICATION UTILITIES
   const [notificationOpen, setNotificationOpen] = useState<boolean>(false);
@@ -2888,18 +2890,29 @@ export default function App() {
                         
                         <div className="flex items-center gap-1.5">
                           {m.role === 'member' && (
-                            <button 
-                              onClick={() => {
-                                // Renewal simulation trigger
-                                fetch(`/api/members`).then(() => {
-                                  showFeedback(`Abonnement de ${m.firstname} prolongé d'un an avec succès.`);
-                                  fetchAllData();
-                                });
-                              }}
-                              className="text-slate-200 bg-[#070b14]/95 hover:bg-slate-950 text-[10px] font-black px-3 py-1.5 rounded-xl border border-slate-800 hover:border-[#8b5cf6]/45 transition cursor-pointer"
-                            >
-                              Prolonger
-                            </button>
+                            <>
+                              <button 
+                                onClick={() => setSelectedHistoryMember(m)}
+                                className="text-violet-400 bg-violet-500/10 hover:bg-violet-500/20 text-[10px] font-black px-2.5 py-1.5 rounded-xl border border-violet-500/35 hover:border-violet-500/60 transition cursor-pointer flex items-center gap-1"
+                                title="Voir l'historique détaillé des emprunts"
+                              >
+                                <History className="h-3 w-3" />
+                                <span>Historique</span>
+                              </button>
+
+                              <button 
+                                onClick={() => {
+                                  // Renewal simulation trigger
+                                  fetch(`/api/members`).then(() => {
+                                    showFeedback(`Abonnement de ${m.firstname} prolongé d'un an avec succès.`);
+                                    fetchAllData();
+                                  });
+                                }}
+                                className="text-slate-200 bg-[#070b14]/95 hover:bg-slate-950 text-[10px] font-black px-3 py-1.5 rounded-xl border border-slate-800 hover:border-[#8b5cf6]/45 transition cursor-pointer"
+                              >
+                                Prolonger
+                              </button>
+                            </>
                           )}
 
                           {currentUser.role === 'admin' && m.id !== currentUser.id && (
@@ -3721,6 +3734,170 @@ export default function App() {
             <p className="text-[10px] text-slate-400 font-mono">
               Format standard adapté pour imprimantes d'étiquettes (Zebra, Brother, Dymo)
             </p>
+
+          </div>
+        </div>
+      )}
+
+      {/* 5. DETAILED LOAN HISTORY MODAL */}
+      {selectedHistoryMember && (
+        <div className="fixed inset-0 z-55 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#0e1629] border border-slate-800/80 rounded-3xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden relative animate-fade-in text-slate-100">
+            
+            {/* Header */}
+            <div className="p-6 border-b border-slate-800 flex items-start justify-between bg-[#131d35]/60">
+              <div className="flex items-center gap-3">
+                <div className="h-11 w-11 bg-violet-500/10 border border-violet-500/20 rounded-2xl flex items-center justify-center font-bold text-violet-400 text-sm font-mono uppercase">
+                  {selectedHistoryMember.firstname[0]}{selectedHistoryMember.lastname[0]}
+                </div>
+                <div>
+                  <h3 className="text-lg font-black tracking-tight text-slate-100 flex items-center gap-2">
+                    <History className="h-5 w-5 text-violet-400" />
+                    <span>Historique de Prêt</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Adhérent(e) : <strong className="text-slate-200">{selectedHistoryMember.firstname} {selectedHistoryMember.lastname}</strong> &middot; <span className="font-mono text-[10px]">{selectedHistoryMember.email}</span>
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedHistoryMember(null)}
+                className="text-slate-400 hover:text-white bg-slate-900/40 p-1.5 hover:bg-slate-900 border border-slate-800/85 rounded-xl transition cursor-pointer"
+                title="Fermer"
+              >
+                <X className="h-4.5 w-4.5" />
+              </button>
+            </div>
+
+            {/* Quick Lifetime Statistics Cards */}
+            <div className="p-6 pb-2 grid grid-cols-2 sm:grid-cols-4 gap-3 bg-[#0a101f]">
+              {(() => {
+                const userLoans = borrowings.filter(b => b.user_id === selectedHistoryMember.id);
+                const activeLoans = userLoans.filter(b => b.status === 'active' || b.status === 'overdue').length;
+                const overdueLoans = userLoans.filter(b => b.status === 'overdue').length;
+                const returnedLoans = userLoans.filter(b => b.status === 'returned').length;
+
+                return (
+                  <>
+                    <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/50">
+                      <span className="text-[9px] text-[#566487] font-black uppercase font-mono tracking-wider block">Total Prêts</span>
+                      <strong className="text-xl font-mono block mt-1 text-slate-100">{userLoans.length}</strong>
+                    </div>
+                    <div className="p-3 bg-[#0c2520]/40 rounded-xl border border-emerald-950/40">
+                      <span className="text-[9px] text-emerald-400 font-black uppercase font-mono tracking-wider block">Restitués</span>
+                      <strong className="text-xl font-mono block mt-1 text-emerald-400">{returnedLoans}</strong>
+                    </div>
+                    <div className="p-3 bg-[#1e153b]/40 rounded-xl border border-violet-950/45">
+                      <span className="text-[9px] text-violet-400 font-black uppercase font-mono tracking-wider block">En Cours</span>
+                      <strong className="text-xl font-mono block mt-1 text-violet-400">{activeLoans - overdueLoans}</strong>
+                    </div>
+                    <div className="p-3 bg-[#381c24]/40 rounded-xl border border-rose-950/50">
+                      <span className="text-[9px] text-rose-400 font-black uppercase font-mono tracking-wider block">En Retard</span>
+                      <strong className={`text-xl font-mono block mt-1 ${overdueLoans > 0 ? 'text-rose-400 animate-pulse' : 'text-slate-500'}`}>
+                        {overdueLoans}
+                      </strong>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* Loans History List Table Area */}
+            <div className="p-6 flex-1 overflow-y-auto min-h-[250px] bg-[#090d19]">
+              {(() => {
+                const userLoans = borrowings.filter(b => b.user_id === selectedHistoryMember.id);
+                if (userLoans.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center py-10 text-center space-y-3">
+                      <div className="h-12 w-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500">
+                        <BookIcon className="h-6 w-6 stroke-[1.5]" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-slate-300 text-xs">Aucun historique d'emprunt enregistrable.</p>
+                        <p className="text-[10px] text-slate-500 mt-1">Cet adhérent n'a jamais effectué d'emprunt d'ouvrages sur la plateforme BiblioSphere.</p>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="border border-slate-800/80 rounded-2xl overflow-hidden shadow-inner bg-[#0a0f1d]">
+                    <table className="w-full text-[11px] text-slate-300 border-collapse table-auto">
+                      <thead>
+                        <tr className="bg-[#141b2e] text-slate-400 border-b border-slate-800 text-[10px] uppercase font-mono tracking-wider text-left">
+                          <th className="px-4 py-3 font-black">Titre du livre</th>
+                          <th className="px-4 py-3 font-black text-center">Date Emprunt</th>
+                          <th className="px-4 py-3 font-black text-center">Date Restitution</th>
+                          <th className="px-4 py-3 font-black text-right">Statut</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-850/70 font-medium">
+                        {userLoans.map((b) => {
+                          const isReturned = b.status === 'returned';
+                          const isOverdue = b.status === 'overdue';
+                          
+                          return (
+                            <tr key={b.id} className="hover:bg-slate-900/60 transition-colors">
+                              <td className="px-4 py-3.5">
+                                <span className="font-extrabold text-slate-100 block max-w-[240px] truncate" title={b.book_title}>
+                                  {b.book_title}
+                                </span>
+                                <span className="text-[9px] text-slate-400 font-mono block mt-0.5">
+                                  ISBN: {b.book_isbn || 'N/A'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3.5 text-center font-mono text-slate-400">
+                                {new Date(b.borrowed_at).toLocaleDateString('fr-FR', {
+                                  day: '2-digit',
+                                  month: '2-digit',
+                                  year: 'numeric'
+                                })}
+                              </td>
+                              <td className="px-4 py-3.5 text-center font-mono">
+                                {isReturned && b.returned_at ? (
+                                  <span className="text-emerald-400 font-bold">
+                                    {new Date(b.returned_at).toLocaleDateString('fr-FR', {
+                                      day: '2-digit',
+                                      month: '2-digit',
+                                      year: 'numeric'
+                                    })}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 italic text-[10px]">
+                                    {isOverdue ? 'À restituer d\'urgence' : 'En cours'}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3.5 text-right">
+                                <span className={`inline-flex px-1.5 py-0.5 text-[8.5px] uppercase tracking-widest font-black rounded-md font-mono ${
+                                  isReturned 
+                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                                    : isOverdue 
+                                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/25' 
+                                    : 'bg-violet-500/10 text-violet-400 border border-violet-500/20'
+                                }`}>
+                                  {isReturned ? 'Restitué' : isOverdue ? 'En retard' : 'Actif'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Footer with action Close */}
+            <div className="p-4 border-t border-slate-800 flex justify-end bg-[#0f182c]/80 backdrop-blur-md">
+              <button
+                onClick={() => setSelectedHistoryMember(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-white font-black text-xs px-5 py-2 rounded-xl transition cursor-pointer"
+              >
+                Fermer l'historique
+              </button>
+            </div>
 
           </div>
         </div>
