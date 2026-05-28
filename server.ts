@@ -4,7 +4,6 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
-import mysql from 'mysql2/promise';
 import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
@@ -15,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-// Initialize Supabase Client (Highest Priority Database Mode if configured)
+// Initialize Supabase Client
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
 let supabase: any = null;
@@ -32,31 +31,15 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
   } catch (err) {
     console.error("Failed to initialize Supabase client:", err);
   }
+} else {
+  console.warn("WARNING: Supabase URL or Service Role Key is missing. Database operations will fail unless configured.");
 }
 
-// Initialize Database Connection Pool (Dual-mode: falls back gracefully if not configured)
-let pool: mysql.Pool | null = null;
-const useMySQL = !!(process.env.DB_HOST && process.env.DB_DATABASE);
-
-if (useMySQL) {
-  try {
-    pool = mysql.createPool({
-      host: process.env.DB_HOST,
-      port: parseInt(process.env.DB_PORT || '3306'),
-      user: process.env.DB_USER || 'root',
-      password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_DATABASE,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-    });
-    console.log("MySQL connection pool successfully created for database:", process.env.DB_DATABASE);
-  } catch (err) {
-    console.error("Failed to initialize MySQL Connection Pool, falling back to fully-featured in-memory database simulation.", err);
-    pool = null;
+function getSupabase() {
+  if (!supabase) {
+    throw new Error("Supabase is not initialized. Please verify your SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.");
   }
-} else {
-  console.log("No DB_HOST / DB_DATABASE configured. Operating in highly optimized, resilient in-memory simulated database mode.");
+  return supabase;
 }
 
 // Initialize Gemini Client
@@ -78,24 +61,8 @@ if (apiKey) {
   }
 }
 
-// Asynchronously probe database endpoints on startup to fail-fast and turn off custom DB mode upon connection failures.
-// This guarantees zero 500/timeout crashes in development, testing, or cloud-serverless deployments like Vercel.
+// Asynchronously probe Supabase database endpoint on startup to fail-fast.
 async function verifyDatabaseConnectivity() {
-  if (pool) {
-    try {
-      console.log("Probing MySQL database connectivity...");
-      const probePromise = pool.query("SELECT 1");
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("MySQL connection probe timed out (2.0 seconds timeout limit reached)")), 2000)
-      );
-      await Promise.race([probePromise, timeoutPromise]);
-      console.log("MySQL connection validated successfully.");
-    } catch (err: any) {
-      console.error("UNABLE TO REACH MYSQL DATABASE. Falling back to simulated in-memory mode:", err.message);
-      pool = null;
-    }
-  }
-
   if (supabase) {
     try {
       console.log("Probing Supabase database connectivity...");
@@ -110,8 +77,7 @@ async function verifyDatabaseConnectivity() {
       }
       console.log("Supabase connection and users table validated successfully.");
     } catch (err: any) {
-      console.error("UNABLE TO REACH SUPABASE OR MISSING SCHEMA. Falling back to simulated in-memory mode:", err.message);
-      supabase = null;
+      console.error("UNABLE TO REACH SUPABASE OR MISSING SCHEMA:", err.message);
     }
   }
 }
@@ -224,959 +190,453 @@ interface AuditLog {
 }
 
 // SEED DATA
-const authors: Author[] = [
-  { id: 1, name: "Victor Hugo", bio: "Écrivain, poète et dramaturge français, figure incontournable du romantisme." },
-  { id: 2, name: "Albert Camus", bio: "Écrivain, philosophe, romancier et dramaturge français, Prix Nobel de littérature." },
-  { id: 3, name: "Émile Zola", bio: "Écrivain et journaliste français, considéré comme le chef de file du naturalisme." },
-  { id: 4, name: "Frank Herbert", bio: "Écrivain américain de science-fiction, célèbre pour son chef-d'œuvre Dune." },
-  { id: 5, name: "George Orwell", bio: "Écrivain, chroniqueur et journaliste anglais, célèbre pour ses romans dystopiques." },
-  { id: 6, name: "Antoine de Saint-Exupéry", bio: "Écrivain, poète, aviateur et reporter français, auteur du Petit Prince." },
-  { id: 7, name: "J.R.R. Tolkien", bio: "Écrivain, poète, philologue et professeur d'université anglais, auteur du Hobbit et du Seigneur des Anneaux." },
-  { id: 8, name: "Yuval Noah Harari", bio: "Historien et professeur d'histoire israélien d'origine polonaise, auteur du best-seller Sapiens." }
-];
-
-const categories: Category[] = [
-  { id: 1, name: "Roman", slug: "roman" },
-  { id: 2, name: "Philosophie & Essais", slug: "philosophie-essais" },
-  { id: 3, name: "Science-Fiction", slug: "science-fiction" },
-  { id: 4, name: "Fantasy", slug: "fantasy" },
-  { id: 5, name: "Histoire", slug: "histoire" },
-  { id: 6, name: "Jeunesse & Contes", slug: "jeunesse-contes" }
-];
-
-let books: Book[] = [
-  {
-    id: 1,
-    isbn: "978-2070409228",
-    title: "Les Misérables",
-    slug: "les-miserables",
-    description: "Dans cette fresque monumentale, Victor Hugo peint la misère sociale du XIXe siècle à travers le destin tragique de Jean Valjean, forçat repenti, poursuivi par l'implacable inspecteur Javert.",
-    author_id: 1,
-    category_id: 1,
-    publisher: "Gallimard",
-    publication_year: 1862,
-    quantity: 8,
-    available_quantity: 6,
-    cover_image: "https://images.unsplash.com/photo-1544947950-fa07a98d237f?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon A - R1",
-    status: "available"
-  },
-  {
-    id: 2,
-    isbn: "978-2070360024",
-    title: "L'Étranger",
-    slug: "l-etranger",
-    description: "À travers l'histoire de Meursault qui commet un meurtre sans motif réel, l'auteur explore la notion d'absurde et l'indifférence face à la société ou à la mort.",
-    author_id: 2,
-    category_id: 2,
-    publisher: "Gallimard NRF",
-    publication_year: 1942,
-    quantity: 6,
-    available_quantity: 4,
-    cover_image: "https://images.unsplash.com/photo-1543002588-bfa74002ed7e?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon B - P3",
-    status: "available"
-  },
-  {
-    id: 3,
-    isbn: "978-2253004226",
-    title: "Germinal",
-    slug: "germinal",
-    description: "Treizième volet de la série des Rougon-Macquart, ce roman dépeint la révolte des mineurs dans le Nord de la France face à la baisse des salaires et à l'exploitation capitaliste.",
-    author_id: 3,
-    category_id: 1,
-    publisher: "Le Livre de Poche",
-    publication_year: 1885,
-    quantity: 5,
-    available_quantity: 5,
-    cover_image: "https://images.unsplash.com/photo-1512820790803-83ca734da794?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon A - R2",
-    status: "available"
-  },
-  {
-    id: 4,
-    isbn: "978-2266155489",
-    title: "Dune (Tome 1)",
-    slug: "dune-1",
-    description: "Sur la planète désertique d'Arrakis, source de l'Épice de prescience, s'engage une lutte acharnée pour le pouvoir impérial impliquant la jeune maison des Atréides.",
-    author_id: 4,
-    category_id: 3,
-    publisher: "Pocket",
-    publication_year: 1965,
-    quantity: 12,
-    available_quantity: 11,
-    cover_image: "https://images.unsplash.com/photo-1532012197267-da84d127e765?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon C - SF1",
-    status: "available"
-  },
-  {
-    id: 5,
-    isbn: "978-2070368228",
-    title: "1984",
-    slug: "1984",
-    description: "Une dystopie glaçante décrivant la vie de Winston Smith sous l'œil vigilant de Big Brother dans une société régie par la surveillance de masse, la désinformation et la novlangue.",
-    author_id: 5,
-    category_id: 3,
-    publisher: "Gallimard Folio",
-    publication_year: 1949,
-    quantity: 10,
-    available_quantity: 7,
-    cover_image: "https://images.unsplash.com/photo-1610116306796-6ebd3051c330?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon C - SF2",
-    status: "available"
-  },
-  {
-    id: 6,
-    isbn: "978-2070625901",
-    title: "Le Petit Prince",
-    slug: "le-petit-prince",
-    description: "Ce conte poétique et philosophique invite à retrouver l'enfant en soi. Le Petit Prince y partage ses enseignements sur l'amour, l'amitié et l'essentiel de la vie invisible pour les yeux.",
-    author_id: 6,
-    category_id: 6,
-    publisher: "Gallimard Jeunesse",
-    publication_year: 1943,
-    quantity: 15,
-    available_quantity: 14,
-    cover_image: "https://images.unsplash.com/photo-1497633762265-9d179a990aa6?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon J - C1",
-    status: "available"
-  },
-  {
-    id: 7,
-    isbn: "978-2266158510",
-    title: "Le Silmarillion",
-    slug: "le-silmarillion",
-    description: "Œuvre de haute fantasy décrivant la genèse politique et légendaire de la Terre du Milieu, le soulèvement de Melkor et la tragédie des Silmarils.",
-    author_id: 7,
-    category_id: 4,
-    publisher: "Pocket",
-    publication_year: 1977,
-    quantity: 4,
-    available_quantity: 4,
-    cover_image: "https://images.unsplash.com/photo-1516979187457-637abb4f9353?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon F - FY1",
-    status: "available"
-  },
-  {
-    id: 8,
-    isbn: "978-2226257017",
-    title: "Sapiens : Une brève histoire de l'humanité",
-    slug: "sapiens",
-    description: "Yuval Noah Harari retrace l'histoire extraordinaire de l'Homo Sapiens, depuis l'âge de pierre jusqu'à la révolution industrielle et numérique actuelle, explorant l'impact de nos croyances fictives collectives.",
-    author_id: 8,
-    category_id: 5,
-    publisher: "Albin Michel",
-    publication_year: 2011,
-    quantity: 6,
-    available_quantity: 5,
-    cover_image: "https://images.unsplash.com/photo-1506880018603-83d5b814b5a6?q=80&w=600&auto=format&fit=crop",
-    shelf_location: "Rayon H - H1",
-    status: "available"
-  }
-];
-
+const authors: Author[] = [];
+const categories: Category[] = [];
+let books: Book[] = [];
 let users: User[] = [];
-
 let borrowings: Borrowing[] = [];
-
 let penalties: Penalty[] = [];
-
 let reservations: Reservation[] = [];
-
 let subscriptions: Subscription[] = [];
-
 let notifications: Notification[] = [];
-
-let auditLogs: AuditLog[] = [
-  { id: 1, user: "Système", action: "Initialisation", target: "Base de données nettoyée pour la production", timestamp: "2026-05-21T18:13:00Z" }
-];
+let auditLogs: AuditLog[] = [];
 
 // UTILITIES FOR DURATION CALCULATIONS ON PENALTIES
 async function recalculatePenalties() {
   const dailyRate = 500; // 500 FCFA per day
   const now = new Date();
   
-  if (pool) {
+  if (supabase) {
     try {
       // Find all active or overdue borrowings
-      const [borrows] = await pool.query<any[]>(
-        "SELECT * FROM borrowings WHERE status IN ('active', 'overdue') AND returned_at IS NULL"
-      );
+      const { data: borrowingsData, error } = await supabase
+        .from('borrowings')
+        .select('*')
+        .in('status', ['active', 'overdue'])
+        .is('returned_at', null);
+        
+      if (error) {
+        console.error("Supabase Error fetching borrowings for recalculatePenalties:", error);
+        return;
+      }
       
-      for (const b of borrows) {
+      for (const b of (borrowingsData || [])) {
         const dueDate = new Date(b.due_date);
         if (now > dueDate) {
           const diffTime = Math.abs(now.getTime() - dueDate.getTime());
           const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
           
           // Update borrowing status to overdue
-          await pool.query("UPDATE borrowings SET status = 'overdue' WHERE id = ?", [b.id]);
+          await supabase.from('borrowings').update({ status: 'overdue' }).eq('id', b.id);
           
           // Check if penalty exists
-          const [penaltiesExists] = await pool.query<any[]>(
-            "SELECT id FROM penalties WHERE borrowing_id = ?", [b.id]
-          );
+          const { data: penaltyData, error: penaltyQueryError } = await supabase
+            .from('penalties')
+            .select('id')
+            .eq('borrowing_id', b.id)
+            .maybeSingle();
+            
+          if (penaltyQueryError) {
+            console.error("Supabase Error fetching penalty for recalculatePenalties:", penaltyQueryError);
+            continue;
+          }
           
           const amount = diffDays * dailyRate;
-          if (penaltiesExists.length > 0) {
-            await pool.query(
-              "UPDATE penalties SET days_overdue = ?, amount = ? WHERE borrowing_id = ?",
-              [diffDays, amount, b.id]
-            );
+          if (penaltyData) {
+            await supabase
+              .from('penalties')
+              .update({ days_overdue: diffDays, amount: amount })
+              .eq('borrowing_id', b.id);
           } else {
-            await pool.query(
-              "INSERT INTO penalties (borrowing_id, user_id, amount, days_overdue, status, created_at) VALUES (?, ?, ?, ?, 'unpaid', NOW())",
-              [b.id, b.user_id, amount, diffDays]
-            );
+            await supabase
+              .from('penalties')
+              .insert([{
+                borrowing_id: b.id,
+                user_id: b.user_id,
+                amount: amount,
+                days_overdue: diffDays,
+                status: 'unpaid'
+              }]);
           }
         }
       }
     } catch (err) {
-      console.error("Error recalulating database penalties:", err);
+      console.error("Error recalculating database penalties on Supabase:", err);
     }
-  } else {
-    borrowings.forEach(b => {
-      if (b.status === 'active' || b.status === 'overdue') {
-        const dueDate = new Date(b.due_date);
-        if (now > dueDate && b.returned_at === null) {
-          b.status = 'overdue';
-          const diffTime = Math.abs(now.getTime() - dueDate.getTime());
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          
-          let existingPenalty = penalties.find(p => p.borrowing_id === b.id);
-          if (existingPenalty) {
-            existingPenalty.days_overdue = diffDays;
-            existingPenalty.amount = diffDays * dailyRate;
-          } else {
-            penalties.push({
-              id: penalties.length + 1,
-              borrowing_id: b.id,
-              user_id: b.user_id,
-              amount: diffDays * dailyRate,
-              days_overdue: diffDays,
-              status: 'unpaid',
-              created_at: now.toISOString()
-            });
-          }
-        }
-      }
-    });
   }
 }
 
-// ---------------- DUAL-MODE DATABASE MANAGER COMPANION ----------------
-const db = {
+// ---------------- DATABASE MANAGER CLIENT DELEGATE (SUPABASE-ONLY) ----------------
+const rawDb = {
   // --- AUTHORS ---
   async getAuthors(): Promise<Author[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('authors').select('*').order('id', { ascending: true });
-      if (error) {
-        console.error("Supabase Error getAuthors:", error);
-        return [];
-      }
-      return data || [];
+    const { data, error } = await getSupabase().from('authors').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error("Supabase Error getAuthors:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT id, name, bio, nationality FROM authors");
-      return rows as Author[];
-    }
-    return authors;
+    return data || [];
   },
 
   async addAuthor(name: string, bio?: string): Promise<Author> {
     const fallbackBio = bio || "Auteur ajouté manuellement";
-    if (supabase) {
-      const { data, error } = await supabase.from('authors').insert([{ name, bio: fallbackBio }]).select().single();
-      if (error) {
-        console.error("Supabase Error addAuthor:", error);
-        throw error;
-      }
-      return data;
+    const { data, error } = await getSupabase().from('authors').insert([{ name, bio: fallbackBio }]).select().single();
+    if (error) {
+      console.error("Supabase Error addAuthor:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO authors (name, bio) VALUES (?, ?)",
-        [name, fallbackBio]
-      );
-      return { id: result.insertId, name, bio: fallbackBio };
-    }
-    const newAuthor = { id: authors.length + 1, name, bio: fallbackBio };
-    authors.push(newAuthor);
-    return newAuthor;
+    return data;
   },
   
   // --- CATEGORIES ---
   async getCategories(): Promise<Category[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('categories').select('*').order('id', { ascending: true });
-      if (error) {
-        console.error("Supabase Error getCategories:", error);
-        return [];
-      }
-      return data || [];
+    const { data, error } = await getSupabase().from('categories').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error("Supabase Error getCategories:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT id, name, slug FROM categories");
-      return rows as Category[];
-    }
-    return categories;
+    return data || [];
   },
 
   // --- USERS ---
   async getUsers(): Promise<User[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('users').select('*').order('id', { ascending: true });
-      if (error) {
-        console.error("Supabase Error getUsers:", error);
-        return [];
-      }
-      return (data || []).map((u: any) => ({
-        ...u,
-        membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type,
-        password_hash: u.password
-      }));
+    const { data, error } = await getSupabase().from('users').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error("Supabase Error getUsers:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>(
-        "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users"
-      );
-      return (rows || []).map((u: any) => ({
-        ...u,
-        membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
-      })) as User[];
-    }
-    return users;
+    return (data || []).map((u: any) => ({
+      ...u,
+      membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type,
+      password_hash: u.password
+    }));
   },
   
   async getUserById(id: number): Promise<User | null> {
-    if (supabase) {
-      const { data, error } = await supabase.from('users').select('*').eq('id', id).maybeSingle();
-      if (error) {
-        console.error("Supabase Error getUserById:", error);
-        return null;
-      }
-      return data ? {
-        ...data,
-        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
-        password_hash: data.password
-      } : null;
+    const { data, error } = await getSupabase().from('users').select('*').eq('id', id).maybeSingle();
+    if (error) {
+      console.error("Supabase Error getUserById:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>(
-        "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users WHERE id = ?",
-        [id]
-      );
-      if (rows.length > 0) {
-        const u = rows[0];
-        return {
-          ...u,
-          membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
-        } as User;
-      }
-      return null;
-    }
-    return users.find(u => u.id === id) || null;
+    return data ? {
+      ...data,
+      membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
+      password_hash: data.password
+    } : null;
   },
 
   async getUserByEmail(email: string): Promise<User | null> {
-    if (supabase) {
-      const { data, error } = await supabase.from('users').select('*').ilike('email', email.trim()).maybeSingle();
-      if (error) {
-        console.error("Supabase Error getUserByEmail:", error);
-        return null;
-      }
-      return data ? {
-        ...data,
-        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
-        password_hash: data.password
-      } : null;
+    const { data, error } = await getSupabase().from('users').select('*').ilike('email', email.trim()).maybeSingle();
+    if (error) {
+      console.error("Supabase Error getUserByEmail:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>(
-        "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users WHERE email = ?",
-        [email]
-      );
-      if (rows.length > 0) {
-        const u = rows[0];
-        return {
-          ...u,
-          membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
-        } as User;
-      }
-      return null;
-    }
-    return users.find(u => u.email.toLowerCase() === email.toLowerCase()) || null;
+    return data ? {
+      ...data,
+      membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
+      password_hash: data.password
+    } : null;
   },
 
   async addUser(u: Omit<User, 'id'>): Promise<User> {
     const dbMembership = u.membership_type === 'Standard' ? 'Classic' : (u.membership_type || 'Classic');
-    if (supabase) {
-      const { data, error } = await supabase.from('users').insert([{
-        firstname: u.firstname,
-        lastname: u.lastname,
-        email: u.email,
-        password: u.password_hash,
-        role: u.role,
-        status: u.status,
-        membership_type: dbMembership
-      }]).select().single();
-      if (error) {
-        console.error("Supabase Error addUser:", error);
-        throw error;
-      }
-      return {
-        ...data,
-        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
-        password_hash: data.password
-      };
+    const { data, error } = await getSupabase().from('users').insert([{
+      firstname: u.firstname,
+      lastname: u.lastname,
+      email: u.email,
+      password: u.password_hash,
+      role: u.role,
+      status: u.status,
+      membership_type: dbMembership
+    }]).select().single();
+    if (error) {
+      console.error("Supabase Error addUser:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO users (firstname, lastname, email, password, role, status, membership_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [u.firstname, u.lastname, u.email, u.password_hash, u.role, u.status, dbMembership]
-      );
-      const insertId = result.insertId;
-      return {
-        id: insertId,
-        ...u,
-        membership_type: dbMembership === 'Classic' ? 'Standard' : dbMembership
-      };
-    }
-    const newUser = { id: users.length + 1, ...u };
-    users.push(newUser);
-    return newUser;
+    return {
+      ...data,
+      membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type,
+      password_hash: data.password
+    };
   },
 
   async updateUserStatus(id: number, status: 'active' | 'suspended' | 'pending'): Promise<void> {
     const dbStatus = status === 'pending' ? 'pending' : status === 'suspended' ? 'suspended' : 'active';
-    if (supabase) {
-      const { error } = await supabase.from('users').update({ status: dbStatus }).eq('id', id);
-      if (error) {
-        console.error("Supabase Error updateUserStatus:", error);
-      }
-      return;
-    }
-    if (pool) {
-      await pool.query("UPDATE users SET status = ? WHERE id = ?", [dbStatus, id]);
-    } else {
-      const u = users.find(usr => usr.id === id);
-      if (u) u.status = status;
+    const { error } = await getSupabase().from('users').update({ status: dbStatus }).eq('id', id);
+    if (error) {
+      console.error("Supabase Error updateUserStatus:", error);
+      throw error;
     }
   },
 
   async deleteUser(id: number): Promise<boolean> {
-    if (supabase) {
-      const { error } = await supabase.from('users').delete().eq('id', id);
-      if (error) {
-        console.error("Supabase Error deleteUser:", error);
-        return false;
-      }
-      return true;
+    const { error } = await getSupabase().from('users').delete().eq('id', id);
+    if (error) {
+      console.error("Supabase Error deleteUser:", error);
+      throw error;
     }
-    if (pool) {
-      await pool.query("DELETE FROM users WHERE id = ?", [id]);
-      return true;
-    }
-    const idx = users.findIndex(u => u.id === id);
-    if (idx === -1) return false;
-    users.splice(idx, 1);
     return true;
   },
 
   // --- BOOKS ---
   async getBooks(): Promise<Book[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('books').select('*').order('id', { ascending: true });
-      if (error) {
-        console.error("Supabase Error getBooks:", error);
-        return [];
-      }
-      return data || [];
+    const { data, error } = await getSupabase().from('books').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error("Supabase Error getBooks:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT * FROM books");
-      return rows as Book[];
-    }
-    return books;
+    return data || [];
   },
 
   async getBookById(id: number): Promise<Book | null> {
-    if (supabase) {
-      const { data, error } = await supabase.from('books').select('*').eq('id', id).maybeSingle();
-      if (error) {
-        console.error("Supabase Error getBookById:", error);
-        return null;
-      }
-      return data || null;
+    const { data, error } = await getSupabase().from('books').select('*').eq('id', id).maybeSingle();
+    if (error) {
+      console.error("Supabase Error getBookById:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT * FROM books WHERE id = ?", [id]);
-      return rows.length > 0 ? (rows[0] as Book) : null;
-    }
-    return books.find(b => b.id === id) || null;
+    return data || null;
   },
 
   async addBook(b: Omit<Book, 'id'>): Promise<Book> {
-    if (supabase) {
-      const { data, error } = await supabase.from('books').insert([{
-        isbn: b.isbn,
-        title: b.title,
-        description: b.description,
-        author_id: b.author_id,
-        category_id: b.category_id,
-        publisher: b.publisher,
-        publication_year: b.publication_year,
-        cover_image: b.cover_image,
-        pdf_url: (b as any).pdf_url || null,
-        quantity: b.quantity,
-        available_quantity: b.available_quantity,
-        shelf_location: b.shelf_location
-      }]).select().single();
-      if (error) {
-        console.error("Supabase Error addBook:", error);
-        throw error;
-      }
-      return data;
+    const { data, error } = await getSupabase().from('books').insert([{
+      isbn: b.isbn,
+      title: b.title,
+      description: b.description,
+      author_id: b.author_id,
+      category_id: b.category_id,
+      publisher: b.publisher,
+      publication_year: b.publication_year,
+      cover_image: b.cover_image,
+      pdf_url: (b as any).pdf_url || null,
+      quantity: b.quantity,
+      available_quantity: b.available_quantity,
+      shelf_location: b.shelf_location
+    }]).select().single();
+    if (error) {
+      console.error("Supabase Error addBook:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO books (isbn, title, description, author_id, category_id, publisher, publication_year, cover_image, quantity, available_quantity, shelf_location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [b.isbn, b.title, b.description, b.author_id, b.category_id, b.publisher, b.publication_year, b.cover_image, b.quantity, b.available_quantity, b.shelf_location]
-      );
-      return { id: result.insertId, ...b };
-    }
-    const newBook = { id: books.length + 1, ...b };
-    books.push(newBook);
-    return newBook;
+    return data;
   },
 
   async updateBook(id: number, b: Partial<Book>): Promise<Book | null> {
-    if (supabase) {
-      const { id: _, ...payload } = b as any;
-      const { data, error } = await supabase.from('books').update(payload).eq('id', id).select().maybeSingle();
-      if (error) {
-        console.error("Supabase Error updateBook:", error);
-        return null;
-      }
-      return data;
+    const { id: _, ...payload } = b as any;
+    const { data, error } = await getSupabase().from('books').update(payload).eq('id', id).select().maybeSingle();
+    if (error) {
+      console.error("Supabase Error updateBook:", error);
+      throw error;
     }
-    if (pool) {
-      const fields: string[] = [];
-      const values: any[] = [];
-      Object.entries(b).forEach(([key, val]) => {
-        if (key !== 'id') {
-          fields.push(`\`${key}\` = ?`);
-          values.push(val);
-        }
-      });
-      values.push(id);
-      await pool.query(`UPDATE books SET ${fields.join(', ')} WHERE id = ?`, values);
-      return this.getBookById(id);
-    }
-    const idx = books.findIndex(bk => bk.id === id);
-    if (idx === -1) return null;
-    books[idx] = { ...books[idx], ...b };
-    return books[idx];
+    return data;
   },
 
   async deleteBook(id: number): Promise<boolean> {
-    if (supabase) {
-      const { error } = await supabase.from('books').delete().eq('id', id);
-      if (error) {
-        console.error("Supabase Error deleteBook:", error);
-        return false;
-      }
-      return true;
+    const { error } = await getSupabase().from('books').delete().eq('id', id);
+    if (error) {
+      console.error("Supabase Error deleteBook:", error);
+      throw error;
     }
-    if (pool) {
-      await pool.query("DELETE FROM books WHERE id = ?", [id]);
-      return true;
-    }
-    const idx = books.findIndex(bk => bk.id === id);
-    if (idx === -1) return false;
-    books.splice(idx, 1);
     return true;
   },
 
   // --- BORROWINGS ---
   async getBorrowings(): Promise<Borrowing[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('borrowings').select('*').order('id', { ascending: true });
-      if (error) {
-        console.error("Supabase Error getBorrowings:", error);
-        return [];
-      }
-      return (data || []).map((r: any) => ({
-        ...r,
-        borrowed_at: new Date(r.borrowed_at).toISOString(),
-        due_date: new Date(r.due_date).toISOString(),
-        returned_at: r.returned_at ? new Date(r.returned_at).toISOString() : null,
-      }));
+    const { data, error } = await getSupabase().from('borrowings').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error("Supabase Error getBorrowings:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT * FROM borrowings");
-      return rows.map(r => ({
-        ...r,
-        borrowed_at: new Date(r.borrowed_at).toISOString(),
-        due_date: new Date(r.due_date).toISOString(),
-        returned_at: r.returned_at ? new Date(r.returned_at).toISOString() : null,
-      })) as Borrowing[];
-    }
-    return borrowings;
+    return (data || []).map((r: any) => ({
+      ...r,
+      borrowed_at: new Date(r.borrowed_at).toISOString(),
+      due_date: new Date(r.due_date).toISOString(),
+      returned_at: r.returned_at ? new Date(r.returned_at).toISOString() : null,
+    }));
   },
 
   async addBorrowing(b: Omit<Borrowing, 'id'>): Promise<Borrowing> {
-    if (supabase) {
-      const { data, error } = await supabase.from('borrowings').insert([{
-        user_id: b.user_id,
-        book_id: b.book_id,
-        borrowed_at: b.borrowed_at,
-        due_date: b.due_date,
-        returned_at: b.returned_at,
-        renewed_count: b.renewed_count,
-        status: b.status
-      }]).select().single();
-      if (error) {
-        console.error("Supabase Error addBorrowing:", error);
-        throw error;
-      }
-      return data;
+    const { data, error } = await getSupabase().from('borrowings').insert([{
+      user_id: b.user_id,
+      book_id: b.book_id,
+      borrowed_at: b.borrowed_at,
+      due_date: b.due_date,
+      returned_at: b.returned_at,
+      renewed_count: b.renewed_count,
+      status: b.status
+    }]).select().single();
+    if (error) {
+      console.error("Supabase Error addBorrowing:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO borrowings (user_id, book_id, borrowed_at, due_date, returned_at, renewed_count, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [b.user_id, b.book_id, b.borrowed_at, b.due_date, b.returned_at, b.renewed_count, b.status]
-      );
-      return { id: result.insertId, ...b };
-    }
-    const newBorrow = { id: borrowings.length + 1, ...b };
-    borrowings.push(newBorrow);
-    return newBorrow;
+    return data;
   },
 
   async updateBorrowing(id: number, b: Partial<Borrowing>): Promise<Borrowing | null> {
-    if (supabase) {
-      const { id: _, ...payload } = b as any;
-      const { data, error } = await supabase.from('borrowings').update(payload).eq('id', id).select().maybeSingle();
-      if (error) {
-        console.error("Supabase Error updateBorrowing:", error);
-        return null;
-      }
-      return data;
+    const { id: _, ...payload } = b as any;
+    const { data, error } = await getSupabase().from('borrowings').update(payload).eq('id', id).select().maybeSingle();
+    if (error) {
+      console.error("Supabase Error updateBorrowing:", error);
+      throw error;
     }
-    if (pool) {
-      const fields: string[] = [];
-      const values: any[] = [];
-      Object.entries(b).forEach(([key, val]) => {
-        if (key !== 'id') {
-          fields.push(`\`${key}\` = ?`);
-          values.push(val);
-        }
-      });
-      values.push(id);
-      await pool.query(`UPDATE borrowings SET ${fields.join(', ')} WHERE id = ?`, values);
-      const [rows] = await pool.query<any[]>("SELECT * FROM borrowings WHERE id = ?", [id]);
-      return rows.length > 0 ? rows[0] as Borrowing : null;
-    }
-    const idx = borrowings.findIndex(br => br.id === id);
-    if (idx === -1) return null;
-    borrowings[idx] = { ...borrowings[idx], ...b };
-    return borrowings[idx];
+    return data;
   },
 
   // --- PENALTIES ---
   async getPenalties(): Promise<Penalty[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('penalties').select('*').order('id', { ascending: true });
-      if (error) {
-        console.error("Supabase Error getPenalties:", error);
-        return [];
-      }
-      return data || [];
+    const { data, error } = await getSupabase().from('penalties').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error("Supabase Error getPenalties:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT id, borrowing_id, user_id, amount, days_overdue, status FROM penalties");
-      return rows as Penalty[];
-    }
-    return penalties;
+    return data || [];
   },
 
   async addPenalty(p: Omit<Penalty, 'id'>): Promise<Penalty> {
-    if (supabase) {
-      const { data, error } = await supabase.from('penalties').insert([{
-        borrowing_id: p.borrowing_id,
-        user_id: p.user_id,
-        amount: p.amount,
-        days_overdue: p.days_overdue,
-        status: p.status
-      }]).select().single();
-      if (error) {
-        console.error("Supabase Error addPenalty:", error);
-        throw error;
-      }
-      return data;
+    const { data, error } = await getSupabase().from('penalties').insert([{
+      borrowing_id: p.borrowing_id,
+      user_id: p.user_id,
+      amount: p.amount,
+      days_overdue: p.days_overdue,
+      status: p.status
+    }]).select().single();
+    if (error) {
+      console.error("Supabase Error addPenalty:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO penalties (borrowing_id, user_id, amount, days_overdue, status, created_at) VALUES (?, ?, ?, ?, ?, NOW())",
-        [p.borrowing_id, p.user_id, p.amount, p.days_overdue, p.status]
-      );
-      return { id: result.insertId, ...p };
-    }
-    const newPenalty = { id: penalties.length + 1, ...p };
-    penalties.push(newPenalty);
-    return newPenalty;
+    return data;
   },
 
   async updatePenalty(id: number, p: Partial<Penalty>): Promise<Penalty | null> {
-    if (supabase) {
-      const { id: _, created_at: __, ...payload } = p as any;
-      const { data, error } = await supabase.from('penalties').update(payload).eq('id', id).select().maybeSingle();
-      if (error) {
-        console.error("Supabase Error updatePenalty:", error);
-        return null;
-      }
-      return data;
+    const { id: _, created_at: __, ...payload } = p as any;
+    const { data, error } = await getSupabase().from('penalties').update(payload).eq('id', id).select().maybeSingle();
+    if (error) {
+      console.error("Supabase Error updatePenalty:", error);
+      throw error;
     }
-    if (pool) {
-      const fields: string[] = [];
-      const values: any[] = [];
-      Object.entries(p).forEach(([key, val]) => {
-        if (key !== 'id' && key !== 'created_at') {
-          fields.push(`\`${key}\` = ?`);
-          values.push(val);
-        }
-      });
-      values.push(id);
-      await pool.query(`UPDATE penalties SET ${fields.join(', ')} WHERE id = ?`, values);
-      const [rows] = await pool.query<any[]>("SELECT * FROM penalties WHERE id = ?", [id]);
-      return rows.length > 0 ? rows[0] as Penalty : null;
-    }
-    const idx = penalties.findIndex(pen => pen.id === id);
-    if (idx === -1) return null;
-    penalties[idx] = { ...penalties[idx], ...p };
-    return penalties[idx];
+    return data;
   },
 
   // --- RESERVATIONS ---
   async getReservations(): Promise<Reservation[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('reservations').select('*').order('id', { ascending: true });
-      if (error) {
-        console.error("Supabase Error getReservations:", error);
-        return [];
-      }
-      return (data || []).map((r: any) => ({
-        ...r,
-        status: r.status === 'completed' ? 'fulfilled' : r.status === 'canceled' ? 'cancelled' : r.status
-      }));
+    const { data, error } = await getSupabase().from('reservations').select('*').order('id', { ascending: true });
+    if (error) {
+      console.error("Supabase Error getReservations:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT * FROM reservations");
-      return rows.map(r => ({
-        ...r,
-        status: r.status === 'completed' ? 'fulfilled' : r.status === 'canceled' ? 'cancelled' : r.status
-      })) as Reservation[];
-    }
-    return reservations;
+    return (data || []).map((r: any) => ({
+      ...r,
+      status: r.status === 'completed' ? 'fulfilled' : r.status === 'canceled' ? 'cancelled' : r.status
+    }));
   },
 
   async addReservation(r: Omit<Reservation, 'id'>): Promise<Reservation> {
     const dbStatus = r.status === 'fulfilled' ? 'completed' : r.status === 'cancelled' ? 'canceled' : r.status;
-    if (supabase) {
-      const { data, error } = await supabase.from('reservations').insert([{
-        user_id: r.user_id,
-        book_id: r.book_id,
-        reserved_at: r.reserved_at,
-        expires_at: r.expires_at,
-        status: dbStatus
-      }]).select().single();
-      if (error) {
-        console.error("Supabase Error addReservation:", error);
-        throw error;
-      }
-      return {
-        ...data,
-        status: data.status === 'completed' ? 'fulfilled' : data.status === 'canceled' ? 'cancelled' : data.status
-      };
+    const { data, error } = await getSupabase().from('reservations').insert([{
+      user_id: r.user_id,
+      book_id: r.book_id,
+      reserved_at: r.reserved_at,
+      expires_at: r.expires_at,
+      status: dbStatus
+    }]).select().single();
+    if (error) {
+      console.error("Supabase Error addReservation:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO reservations (user_id, book_id, reserved_at, expires_at, status) VALUES (?, ?, ?, ?, ?)",
-        [r.user_id, r.book_id, r.reserved_at, r.expires_at, dbStatus]
-      );
-      return { id: result.insertId, ...r };
-    }
-    const newRes = { id: reservations.length + 1, ...r };
-    reservations.unshift(newRes);
-    return newRes;
+    return {
+      ...data,
+      status: data.status === 'completed' ? 'fulfilled' : data.status === 'canceled' ? 'cancelled' : data.status
+    };
   },
 
   async updateReservation(id: number, r: Partial<Reservation>): Promise<Reservation | null> {
-    if (supabase) {
-      const payload: any = {};
-      if (r.status !== undefined) {
-        payload.status = r.status === 'fulfilled' ? 'completed' : r.status === 'cancelled' ? 'canceled' : r.status;
-      }
-      if (r.expires_at !== undefined) {
-        payload.expires_at = r.expires_at;
-      }
-      const { data, error } = await supabase.from('reservations').update(payload).eq('id', id).select().maybeSingle();
-      if (error) {
-        console.error("Supabase Error updateReservation:", error);
-        return null;
-      }
-      return data ? {
-        ...data,
-        status: data.status === 'completed' ? 'fulfilled' : data.status === 'canceled' ? 'cancelled' : data.status
-      } : null;
+    const payload: any = {};
+    if (r.status !== undefined) {
+      payload.status = r.status === 'fulfilled' ? 'completed' : r.status === 'cancelled' ? 'canceled' : r.status;
     }
-    if (pool) {
-      const fields: string[] = [];
-      const values: any[] = [];
-      if (r.status !== undefined) {
-        fields.push("status = ?");
-        values.push(r.status === 'fulfilled' ? 'completed' : r.status === 'cancelled' ? 'canceled' : r.status);
-      }
-      if (r.expires_at !== undefined) {
-        fields.push("expires_at = ?");
-        values.push(r.expires_at);
-      }
-      if (fields.length === 0) return null;
-      values.push(id);
-      await pool.query(`UPDATE reservations SET ${fields.join(', ')} WHERE id = ?`, values);
-      const [rows] = await pool.query<any[]>("SELECT * FROM reservations WHERE id = ?", [id]);
-      if (rows.length === 0) return null;
-      const resVal = rows[0];
-      return {
-        ...resVal,
-        status: resVal.status === 'completed' ? 'fulfilled' : resVal.status === 'canceled' ? 'cancelled' : resVal.status
-      } as Reservation;
+    if (r.expires_at !== undefined) {
+      payload.expires_at = r.expires_at;
     }
-    const idx = reservations.findIndex(resItem => resItem.id === id);
-    if (idx === -1) return null;
-    reservations[idx] = { ...reservations[idx], ...r };
-    return reservations[idx];
+    const { data, error } = await getSupabase().from('reservations').update(payload).eq('id', id).select().maybeSingle();
+    if (error) {
+      console.error("Supabase Error updateReservation:", error);
+      throw error;
+    }
+    return data ? {
+      ...data,
+      status: data.status === 'completed' ? 'fulfilled' : data.status === 'canceled' ? 'cancelled' : data.status
+    } : null;
   },
 
   // --- AUDIT LOGS ---
   async getAuditLogs(): Promise<AuditLog[]> {
-    if (supabase) {
-      const { data, error } = await supabase.from('audit_logs').select('*').order('id', { ascending: false });
-      if (error) {
-        console.error("Supabase Error getAuditLogs:", error);
-        return [];
-      }
-      return (data || []).map((l: any) => ({
-        ...l,
-        timestamp: new Date(l.timestamp).toISOString()
-      }));
+    const { data, error } = await getSupabase().from('audit_logs').select('*').order('id', { ascending: false });
+    if (error) {
+      console.error("Supabase Error getAuditLogs:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT id, user, action, target, timestamp FROM audit_logs ORDER BY id DESC");
-      return rows.map(r => ({
-        ...r,
-        timestamp: new Date(r.timestamp).toISOString()
-      })) as AuditLog[];
-    }
-    return auditLogs;
+    return (data || []).map((l: any) => ({
+      ...l,
+      timestamp: new Date(l.timestamp).toISOString()
+    }));
   },
 
   async addAuditLog(log: Omit<AuditLog, 'id'>): Promise<AuditLog> {
-    if (supabase) {
-      const { data, error } = await supabase.from('audit_logs').insert([{
-        user: log.user,
-        action: log.action,
-        target: log.target
-      }]).select().single();
-      if (error) {
-        console.error("Supabase Error addAuditLog:", error);
-        throw error;
-      }
-      return data;
+    const { data, error } = await getSupabase().from('audit_logs').insert([{
+      user: log.user,
+      action: log.action,
+      target: log.target
+    }]).select().single();
+    if (error) {
+      console.error("Supabase Error addAuditLog:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO audit_logs (user, action, target) VALUES (?, ?, ?)",
-        [log.user, log.action, log.target]
-      );
-      return { id: result.insertId, ...log };
-    }
-    const newLog = { id: auditLogs.length + 1, ...log };
-    auditLogs.unshift(newLog);
-    return newLog;
+    return data;
   },
 
   // --- NOTIFICATIONS ---
   async getNotifications(): Promise<Notification[]> {
-    if (supabase) {
-      const { data, error } = await supabase.supabase ? await supabase.from('notifications').select('*').order('id', { ascending: false }) : await supabase.from('notifications').select('*').order('id', { ascending: false });
-      const notificationsData = data || [];
-      return notificationsData.map((n: any) => ({
-        ...n,
-        type: n.type === 'warning' ? 'alert' : n.type === 'danger' ? 'alert' : 'info',
-        is_read: !!n.is_read,
-        created_at: new Date(n.created_at).toISOString()
-      }));
+    const { data, error } = await getSupabase().from('notifications').select('*').order('id', { ascending: false });
+    if (error) {
+      console.error("Supabase Error getNotifications:", error);
+      throw error;
     }
-    if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT id, user_id, title, message, type, is_read, created_at FROM notifications ORDER BY id DESC");
-      return rows.map(r => ({
-        ...r,
-        type: r.type === 'warning' ? 'alert' : r.type === 'danger' ? 'alert' : 'info',
-        is_read: !!r.is_read,
-        created_at: new Date(r.created_at).toISOString()
-      })) as Notification[];
-    }
-    return notifications;
+    const notificationsData = data || [];
+    return notificationsData.map((n: any) => ({
+      ...n,
+      type: n.type === 'warning' ? 'alert' : n.type === 'danger' ? 'alert' : 'info',
+      is_read: !!n.is_read,
+      created_at: new Date(n.created_at).toISOString()
+    }));
   },
 
   async addNotification(n: Omit<Notification, 'id'>): Promise<Notification> {
-    if (supabase) {
-      const { data, error } = await supabase.from('notifications').insert([{
-        user_id: n.user_id,
-        title: n.title,
-        message: n.message,
-        type: n.type === 'alert' ? 'warning' : n.type
-      }]).select().single();
-      if (error) {
-        console.error("Supabase Error addNotification:", error);
-        throw error;
-      }
-      return {
-        ...data,
-        type: data.type === 'warning' ? 'alert' : data.type === 'danger' ? 'alert' : 'info',
-        is_read: !!data.is_read,
-        created_at: new Date(data.created_at).toISOString()
-      };
+    const { data, error } = await getSupabase().from('notifications').insert([{
+      user_id: n.user_id,
+      title: n.title,
+      message: n.message,
+      type: n.type === 'alert' ? 'warning' : n.type
+    }]).select().single();
+    if (error) {
+      console.error("Supabase Error addNotification:", error);
+      throw error;
     }
-    if (pool) {
-      const [result] = await pool.query<any>(
-        "INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)",
-        [n.user_id, n.title, n.message, n.type === 'alert' ? 'warning' : n.type]
-      );
-      return { id: result.insertId, ...n };
-    }
-    const newNotif = { id: notifications.length + 1, ...n };
-    notifications.unshift(newNotif);
-    return newNotif;
+    return {
+      ...data,
+      type: data.type === 'warning' ? 'alert' : data.type === 'danger' ? 'alert' : 'info',
+      is_read: !!data.is_read,
+      created_at: new Date(data.created_at).toISOString()
+    };
   },
 
   async readAllNotifications(): Promise<void> {
-    if (supabase) {
-      const { error } = await supabase.from('notifications').update({ is_read: true }).eq('is_read', false);
-      if (error) {
-        console.error("Supabase Error readAllNotifications:", error);
-      }
-      return;
-    }
-    if (pool) {
-      await pool.query("UPDATE notifications SET is_read = 1");
-    } else {
-      notifications.forEach(n => n.is_read = true);
+    const { error } = await getSupabase().from('notifications').update({ is_read: true }).eq('is_read', false);
+    if (error) {
+      console.error("Supabase Error readAllNotifications:", error);
+      throw error;
     }
   }
 };
+
+const db = rawDb;
 
 // REST API ROUTER
 const api = express.Router();
@@ -1185,19 +645,8 @@ const api = express.Router();
 api.get('/auth/check-admin', async (req, res) => {
   let adminExists = false;
   try {
-    if (supabase) {
-      const { data, error } = await supabase.from('users').select('id').eq('role', 'admin').limit(1);
-      if (!error && data && data.length > 0) {
-        adminExists = true;
-      }
-    } else if (pool) {
-      const [rows] = await pool.query<any[]>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
-      if (rows[0] && rows[0].count > 0) {
-        adminExists = true;
-      }
-    } else {
-      adminExists = users.some(u => u.role === 'admin');
-    }
+    const allUsers = await db.getUsers();
+    adminExists = allUsers.some(u => u.role === 'admin');
   } catch (err) {
     console.error("Error checking admin count in DB:", err);
     adminExists = users.some(u => u.role === 'admin');
@@ -1218,14 +667,8 @@ api.post('/auth/register', async (req, res) => {
     if (userRole === 'admin') {
       let adminExists = false;
       try {
-        if (pool) {
-          const [rows] = await pool.query<any[]>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
-          if (rows[0] && rows[0].count > 0) {
-            adminExists = true;
-          }
-        } else {
-          adminExists = users.some(u => u.role === 'admin');
-        }
+        const allUsers = await db.getUsers();
+        adminExists = allUsers.some(u => u.role === 'admin');
       } catch (err) {
         adminExists = users.some(u => u.role === 'admin');
       }
@@ -1337,30 +780,8 @@ api.get('/books', async (req, res) => {
     });
     return res.json(enriched);
   } catch (error: any) {
-    console.error("Self-healing error occurred in GET /books route. Disabling DB mode and choosing fallback:", error.message);
-    // Turn off DB clients to instantly heal subsequent requests too
-    pool = null;
-    supabase = null;
-    
-    // Graceful compile of mock objects
-    const allBooks = books;
-    const allAuthors = authors;
-    const allCategories = categories;
-    const allReservations = reservations.filter(r => r.status === 'pending');
-    
-    const enriched = allBooks.map(b => {
-      const author = allAuthors.find(a => a.id === b.author_id);
-      const category = allCategories.find(c => c.id === b.category_id);
-      const reservations_count = allReservations.filter(r => r.book_id === b.id).length;
-      return {
-        ...b,
-        author: author ? author.name : "Auteur inconnu",
-        author_bio: author ? author.bio : "",
-        category: category ? category.name : "Général",
-        reservations_count
-      };
-    });
-    return res.json(enriched);
+    console.error("Error in GET /books route:", error.message);
+    return res.status(500).json({ error: "Impossible de récupérer la liste des livres de la base de données." });
   }
 });
 
