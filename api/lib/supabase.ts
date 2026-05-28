@@ -8,10 +8,12 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// Prioritize SUPABASE_SERVICE_ROLE_KEY for backend admin operations to bypass RLS policies
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Missing Supabase environment variables!");
+  throw new Error("Missing Supabase environment variables! Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your Vercel Dashboard.");
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
