@@ -1,0 +1,6 @@
+{
+  "name": "BiblioSphere",
+  "description": "Plateforme professionnelle intelligente de gestion de bibliothèque (SaaS moderne) avec recommandations IA, graphiques statistiques et gestion complète.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
