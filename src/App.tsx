@@ -227,41 +227,45 @@ export default function App() {
     setTimeout(() => setFeedbackMsg(null), 5000);
   };
 
+  // Helper to safely fetch and parse JSON, preventing HTML crash on 404 errors
+  const safeFetchJson = async (url: string, options?: RequestInit) => {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get("content-type");
+    if (!res.ok) {
+      let errMsg = `Erreur (${res.status})`;
+      if (contentType && contentType.includes("application/json")) {
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+      } else {
+        const text = await res.text();
+        if (text.includes("The page could not be found") || text.includes("<html")) {
+          errMsg = `Le serveur a renvoyé une page d'erreur (404/500). Veuillez vérifier que le serveur est démarré.`;
+        } else {
+          errMsg = text || errMsg;
+        }
+      }
+      throw new Error(errMsg);
+    }
+    if (contentType && contentType.includes("application/json")) {
+      return await res.json();
+    }
+    throw new Error("Réponse inattendue du serveur (pas de JSON valide).");
+  };
+
   // CORE REFRESH FUNCTIONS
   const fetchAllData = async () => {
     try {
-      const bRes = await fetch('/api/books');
-      const booksData = await bRes.json();
-      setBooks(booksData);
-
-      const mRes = await fetch('/api/members');
-      const memsData = await mRes.json();
-      setMembers(memsData);
-
-      const brRes = await fetch('/api/borrowings');
-      const borrowsData = await brRes.json();
-      setBorrowings(borrowsData);
-
-      const pRes = await fetch('/api/penalties');
-      const penaltiesData = await pRes.json();
-      setPenalties(penaltiesData);
-
-      const nRes = await fetch('/api/notifications');
-      const listNotifs = await nRes.json();
-      setNotifications(listNotifs);
-
-      const logRes = await fetch('/api/audit-logs');
-      const systemLogs = await logRes.json();
-      setAuditLogs(systemLogs);
-
-      const rRes = await fetch('/api/reservations');
-      const resData = await rRes.json();
-      setReservations(resData);
-
-      const statsRes = await fetch('/api/stats');
-      const systemStats = await statsRes.json();
-      setStats(systemStats);
-    } catch (e) {
+      setBooks(await safeFetchJson('/api/books'));
+      setMembers(await safeFetchJson('/api/members'));
+      setBorrowings(await safeFetchJson('/api/borrowings'));
+      setPenalties(await safeFetchJson('/api/penalties'));
+      setNotifications(await safeFetchJson('/api/notifications'));
+      setAuditLogs(await safeFetchJson('/api/audit-logs'));
+      setReservations(await safeFetchJson('/api/reservations'));
+      setStats(await safeFetchJson('/api/stats'));
+    } catch (e: any) {
       console.error("Error connecting with simulated REST API:", e);
     }
   };
@@ -274,12 +278,11 @@ export default function App() {
   const runAiRecommender = async (userId: number) => {
     setRecommendLoading(true);
     try {
-      const res = await fetch('/api/recommender', {
+      const data = await safeFetchJson('/api/recommender', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: userId })
       });
-      const data = await res.json();
       if (data.recommendations) {
         setAiRecommendations(data.recommendations);
       }
@@ -292,30 +295,24 @@ export default function App() {
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    fetch('/api/auth/login', {
+    safeFetchJson('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: loginEmail, password: loginPassword })
     })
-    .then(async (res) => {
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentUser(data.user);
-        localStorage.setItem('currentUser', JSON.stringify(data.user));
-        showFeedback(`Bienvenue, ${data.user.firstname} !`);
-        if (data.user.role === 'admin') {
-          setActiveTab('dashboard');
-        } else {
-          setActiveTab('books');
-        }
+    .then((data) => {
+      setCurrentUser(data.user);
+      localStorage.setItem('currentUser', JSON.stringify(data.user));
+      showFeedback(`Bienvenue, ${data.user.firstname} !`);
+      if (data.user.role === 'admin') {
+        setActiveTab('dashboard');
       } else {
-        const err = await res.json();
-        showFeedback(err.error || "Identifiants incorrects.", 'danger');
+        setActiveTab('books');
       }
     })
     .catch((error) => {
       console.error(error);
-      showFeedback("Impossible de contacter le serveur local.", 'danger');
+      showFeedback(error.message || "Impossible de contacter le serveur local.", 'danger');
     });
   };
 
@@ -327,7 +324,7 @@ export default function App() {
       return;
     }
 
-    fetch('/api/auth/register', {
+    safeFetchJson('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -341,25 +338,19 @@ export default function App() {
         membership_type: regMembership
       })
     })
-    .then(async (res) => {
-      if (res.ok) {
-        const data = await res.json();
-        setCurrentUser(data.user);
-        localStorage.setItem('currentUser', JSON.stringify(data.user));
-        showFeedback("Compte créé avec succès ! Bienvenue à bord.");
-        if (data.user.role === 'admin') {
-          setActiveTab('dashboard');
-        } else {
-          setActiveTab('books');
-        }
+    .then((data) => {
+      setCurrentUser(data.user);
+      localStorage.setItem('currentUser', JSON.stringify(data.user));
+      showFeedback("Compte créé avec succès ! Bienvenue à bord.");
+      if (data.user.role === 'admin') {
+        setActiveTab('dashboard');
       } else {
-        const err = await res.json();
-        showFeedback(err.error || "Erreur lors de la création du compte.", 'danger');
+        setActiveTab('books');
       }
     })
     .catch((error) => {
       console.error(error);
-      showFeedback("Impossible de contacter le serveur local.", 'danger');
+      showFeedback(error.message || "Erreur lors de la création du compte.", 'danger');
     });
   };
 
@@ -368,8 +359,7 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    fetch('/api/auth/check-admin')
-      .then(res => res.json())
+    safeFetchJson('/api/auth/check-admin')
       .then(data => setAdminExists(data.adminExists))
       .catch(err => console.error("Error reading admin presence:", err));
   }, [authTab, currentUser]);
@@ -595,14 +585,13 @@ export default function App() {
   // PENALTY PAYMENT
   const handlePayPenalty = async (id: number) => {
     await runActionWithTrigger(`pay-${id}`, async () => {
-      const res = await fetch(`/api/penalties/${id}/pay`, { method: 'POST' });
-      const data = await res.json();
-      if (res.ok) {
+      try {
+        await safeFetchJson(`/api/penalties/${id}/pay`, { method: 'POST' });
         showFeedback("Paiement enregistré d'amende de retard. Le compte du membre a été déverrouillé !");
         fetchAllData();
-      } else {
-        showFeedback(data.error || "Échec du règlement de l'amende.", 'danger');
-        throw new Error(data.error);
+      } catch (err: any) {
+        showFeedback(err.message || "Échec du règlement de l'amende.", 'danger');
+        throw err;
       }
     });
   };
@@ -614,18 +603,17 @@ export default function App() {
       return;
     }
     await runActionWithTrigger(`reserve-${bookId}`, async () => {
-      const res = await fetch('/api/reservations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: currentUser.id, book_id: bookId })
-      });
-      const data = await res.json();
-      if (res.ok) {
+      try {
+        await safeFetchJson('/api/reservations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: currentUser.id, book_id: bookId })
+        });
         showFeedback("Félicitations ! Votre réservation d'ouvrage a bien été enregistrée et transmise à Sphera.");
         fetchAllData();
-      } else {
-        showFeedback(data.error || "Erreur lors du traitement de la réservation.", "danger");
-        throw new Error(data.error);
+      } catch (err: any) {
+        showFeedback(err.message || "Erreur lors du traitement de la réservation.", "danger");
+        throw err;
       }
     });
   };
@@ -633,21 +621,22 @@ export default function App() {
   // CANCEL RESERVATION
   const handleCancelReservation = async (reservationId: number) => {
     await runActionWithTrigger(`cancel-res-${reservationId}`, async () => {
-      const res = await fetch(`/api/reservations/${reservationId}/cancel`, { method: 'POST' });
-      const data = await res.json();
-      if (res.ok) {
+      try {
+        await safeFetchJson(`/api/reservations/${reservationId}/cancel`, { method: 'POST' });
         showFeedback("La réservation a été annulée avec succès. L'ouvrage est libéré.");
         fetchAllData();
-      } else {
-        showFeedback(data.error || "Erreur d'annulation.", 'danger');
-        throw new Error(data.error);
+      } catch (err: any) {
+        showFeedback(err.message || "Erreur d'annulation.", 'danger');
+        throw err;
       }
     });
   };
 
   // NOTIFICATION CLEAR
   const handleMarkNotificationsRead = async () => {
-    await fetch('/api/notifications/mark-all-read', { method: 'POST' });
+    try {
+      await safeFetchJson('/api/notifications/mark-all-read', { method: 'POST' });
+    } catch (_) {}
     fetchAllData();
   };
 
@@ -2175,18 +2164,17 @@ export default function App() {
                                     }
                                     const directKey = `borrow-direct-${b.id}`;
                                     await runActionWithTrigger(directKey, async () => {
-                                      const res = await fetch('/api/borrowings', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ user_id: currentUser.id, book_id: b.id })
-                                      });
-                                      const data = await res.json();
-                                      if (res.ok) {
+                                      try {
+                                        await safeFetchJson('/api/borrowings', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ user_id: currentUser.id, book_id: b.id })
+                                        });
                                         showFeedback(`Succès ! Votre emprunt de '${b.title}' est enregistré.`);
                                         fetchAllData();
-                                      } else {
-                                        showFeedback(data.error, 'danger');
-                                        throw new Error(data.error);
+                                      } catch (err: any) {
+                                        showFeedback(err.message || "Une erreur est survenue", 'danger');
+                                        throw err;
                                       }
                                     });
                                   }}
@@ -2646,18 +2634,17 @@ export default function App() {
                                         onClick={async () => {
                                           const actionKey = `fulfill-${r.id}`;
                                           await runActionWithTrigger(actionKey, async () => {
-                                            const res = await fetch('/api/borrowings', {
-                                              method: 'POST',
-                                              headers: { 'Content-Type': 'application/json' },
-                                              body: JSON.stringify({ user_id: r.user_id, book_id: r.book_id })
-                                            });
-                                            const data = await res.json();
-                                            if (res.ok) {
+                                            try {
+                                              await safeFetchJson('/api/borrowings', {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({ user_id: r.user_id, book_id: r.book_id })
+                                              });
                                               showFeedback(`Félicitations! Le livre est attribué à ${r.user_name || 'l\'adhérent'}.`);
                                               fetchAllData();
-                                            } else {
-                                              showFeedback(data.error, 'danger');
-                                              throw new Error(data.error);
+                                            } catch (err: any) {
+                                              showFeedback(err.message, 'danger');
+                                              throw err;
                                             }
                                           });
                                         }}
@@ -2685,16 +2672,15 @@ export default function App() {
                                         onClick={async () => {
                                           const cancelKey = `cancel-res-${r.id}`;
                                           await runActionWithTrigger(cancelKey, async () => {
-                                            const res = await fetch(`/api/reservations/${r.id}/cancel`, {
-                                              method: 'POST'
-                                            });
-                                            const data = await res.json();
-                                            if (res.ok) {
+                                            try {
+                                              await safeFetchJson(`/api/reservations/${r.id}/cancel`, {
+                                                method: 'POST'
+                                              });
                                               showFeedback(`Succès ! La réservation de '${r.book_title}' a été annulée.`);
                                               fetchAllData();
-                                            } else {
-                                              showFeedback(data.error, 'danger');
-                                              throw new Error(data.error);
+                                            } catch (err: any) {
+                                              showFeedback(err.message, 'danger');
+                                              throw err;
                                             }
                                           });
                                         }}
@@ -3103,20 +3089,15 @@ export default function App() {
                           <button 
                             onClick={async () => {
                               try {
-                                const r = await fetch('/api/borrowings', {
+                                await safeFetchJson('/api/borrowings', {
                                   method: 'POST',
                                   headers: { 'Content-Type': 'application/json' },
                                   body: JSON.stringify({ user_id: currentUser.id, book_id: rec.id })
                                 });
-                                const d = await r.json();
-                                if (r.ok) {
-                                  showFeedback(`Emprunt IA validé : '${rec.title}' est attribué.`);
-                                  fetchAllData();
-                                } else {
-                                  showFeedback(d.error, 'danger');
-                                }
-                              } catch (e) {
-                                showFeedback("Erreur de prêt", 'danger');
+                                showFeedback(`Emprunt IA validé : '${rec.title}' est attribué.`);
+                                fetchAllData();
+                              } catch (e: any) {
+                                showFeedback(e.message || "Erreur de prêt", 'danger');
                               }
                             }}
                             className="w-full text-center bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-extrabold py-1.5 rounded-xl text-[10px] cursor-pointer"

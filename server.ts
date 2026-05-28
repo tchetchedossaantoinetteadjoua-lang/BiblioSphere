@@ -355,7 +355,77 @@ async function recalculatePenalties() {
   const dailyRate = 500; // 500 FCFA per day
   const now = new Date();
   
-  if (pool) {
+  if (supabase) {
+    try {
+      // Find all active or overdue borrowings
+      const { data: borrows, error: borrowError } = await supabase
+        .from('borrowings')
+        .select('*')
+        .in('status', ['active', 'overdue'])
+        .is('returned_at', null);
+
+      if (borrowError) {
+        console.error("Supabase Error fetching borrowings for recalculation:", borrowError);
+        throw borrowError;
+      }
+
+      for (const b of (borrows || [])) {
+        const dueDate = new Date(b.due_date);
+        if (now > dueDate) {
+          const diffTime = Math.abs(now.getTime() - dueDate.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          const amount = diffDays * dailyRate;
+
+          // Update borrowing status to overdue
+          const { error: updateError } = await supabase
+            .from('borrowings')
+            .update({ status: 'overdue' })
+            .eq('id', b.id);
+          if (updateError) {
+            console.error(`Supabase Error updating borrowing #${b.id} to overdue:`, updateError);
+            throw updateError;
+          }
+
+          // Check if penalty exists
+          const { data: existingPenalties, error: penaltyErr } = await supabase
+            .from('penalties')
+            .select('id')
+            .eq('borrowing_id', b.id);
+          if (penaltyErr) {
+            console.error(`Supabase Error checking penalty for borrowing #${b.id}:`, penaltyErr);
+            throw penaltyErr;
+          }
+
+          if (existingPenalties && existingPenalties.length > 0) {
+            const { error: uErr } = await supabase
+              .from('penalties')
+              .update({ days_overdue: diffDays, amount: amount })
+              .eq('borrowing_id', b.id);
+            if (uErr) {
+              console.error(`Supabase Error updating penalty for borrowing #${b.id}:`, uErr);
+              throw uErr;
+            }
+          } else {
+            const { error: iErr } = await supabase
+              .from('penalties')
+              .insert([{
+                borrowing_id: b.id,
+                user_id: b.user_id,
+                amount: amount,
+                days_overdue: diffDays,
+                status: 'unpaid'
+              }]);
+            if (iErr) {
+              console.error(`Supabase Error inserting penalty for borrowing #${b.id}:`, iErr);
+              throw iErr;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error recalculating Supabase penalties:", err);
+    }
+  } else if (pool) {
     try {
       // Find all active or overdue borrowings
       const [borrows] = await pool.query<any[]>(
@@ -489,13 +559,20 @@ const db = {
         console.error("Supabase Error getUsers:", error);
         return [];
       }
-      return (data || []).map((u: any) => ({ ...u, password_hash: u.password }));
+      return (data || []).map((u: any) => ({
+        ...u,
+        password_hash: u.password,
+        membership_type: u.membership_type === 'Classic' ? 'Standard' : u.membership_type
+      }));
     }
     if (pool) {
       const [rows] = await pool.query<any[]>(
         "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users"
       );
-      return rows as User[];
+      return rows.map((r: any) => ({
+        ...r,
+        membership_type: r.membership_type === 'Classic' ? 'Standard' : r.membership_type
+      })) as User[];
     }
     return users;
   },
@@ -507,14 +584,21 @@ const db = {
         console.error("Supabase Error getUserById:", error);
         return null;
       }
-      return data ? { ...data, password_hash: data.password } : null;
+      return data ? {
+        ...data,
+        password_hash: data.password,
+        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type
+      } : null;
     }
     if (pool) {
       const [rows] = await pool.query<any[]>(
         "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users WHERE id = ?",
         [id]
       );
-      return rows.length > 0 ? (rows[0] as User) : null;
+      return rows.length > 0 ? {
+        ...rows[0],
+        membership_type: rows[0].membership_type === 'Classic' ? 'Standard' : rows[0].membership_type
+      } as User : null;
     }
     return users.find(u => u.id === id) || null;
   },
@@ -526,19 +610,27 @@ const db = {
         console.error("Supabase Error getUserByEmail:", error);
         return null;
       }
-      return data ? { ...data, password_hash: data.password } : null;
+      return data ? {
+        ...data,
+        password_hash: data.password,
+        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type
+      } : null;
     }
     if (pool) {
       const [rows] = await pool.query<any[]>(
         "SELECT id, firstname, lastname, email, password AS password_hash, role, status, membership_type FROM users WHERE email = ?",
         [email]
       );
-      return rows.length > 0 ? (rows[0] as User) : null;
+      return rows.length > 0 ? {
+        ...rows[0],
+        membership_type: rows[0].membership_type === 'Classic' ? 'Standard' : rows[0].membership_type
+      } as User : null;
     }
     return users.find(u => u.email.toLowerCase() === email.toLowerCase()) || null;
   },
 
   async addUser(u: Omit<User, 'id'>): Promise<User> {
+    const dbMembership = u.membership_type === 'Standard' ? 'Classic' : (u.membership_type || 'Classic');
     if (supabase) {
       const { data, error } = await supabase.from('users').insert([{
         firstname: u.firstname,
@@ -547,18 +639,22 @@ const db = {
         password: u.password_hash,
         role: u.role,
         status: u.status,
-        membership_type: u.membership_type || 'Classic'
+        membership_type: dbMembership
       }]).select().single();
       if (error) {
         console.error("Supabase Error addUser:", error);
         throw error;
       }
-      return { ...data, password_hash: data.password };
+      return {
+        ...data,
+        password_hash: data.password,
+        membership_type: data.membership_type === 'Classic' ? 'Standard' : data.membership_type
+      };
     }
     if (pool) {
       const [result] = await pool.query<any>(
         "INSERT INTO users (firstname, lastname, email, password, role, status, membership_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [u.firstname, u.lastname, u.email, u.password_hash, u.role, u.status, u.membership_type || 'Classic']
+        [u.firstname, u.lastname, u.email, u.password_hash, u.role, u.status, dbMembership]
       );
       const insertId = result.insertId;
       return { id: insertId, ...u };
@@ -1031,7 +1127,7 @@ const db = {
   // --- NOTIFICATIONS ---
   async getNotifications(): Promise<Notification[]> {
     if (supabase) {
-      const { data, error } = await supabase.supabase ? await supabase.from('notifications').select('*').order('id', { ascending: false }) : await supabase.from('notifications').select('*').order('id', { ascending: false });
+      const { data, error } = await supabase.from('notifications').select('*').order('id', { ascending: false });
       const notificationsData = data || [];
       return notificationsData.map((n: any) => ({
         ...n,
