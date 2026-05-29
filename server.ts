@@ -63,31 +63,45 @@ if (apiKey) {
 
 // Database execution mode state: 'supabase' (real database schema) or 'memory' (in-memory offline/fallback)
 let dbMode: 'supabase' | 'memory' = 'memory';
+let lastSupabaseProbe: number = 0; // timestamp of last successful probe
 
-// Asynchronously probe Supabase database endpoint on startup to fail-fast.
-async function verifyDatabaseConnectivity() {
-  if (supabase) {
-    try {
-      console.log("Probing Supabase database connectivity...");
-      // Probe if custom users table exists/is readable
-      const probePromise = supabase.from('users').select('id').limit(1);
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Supabase connection probe timed out (2.0 seconds timeout limit reached)")), 2000)
-      );
-      const res: any = await Promise.race([probePromise, timeoutPromise]);
-      if (res && res.error) {
-        throw new Error(`Supabase query failed: ${res.error.message}`);
-      }
-      console.log("Supabase connection and users table validated successfully. Switching DB mode to 'supabase'.");
-      dbMode = 'supabase';
-    } catch (err: any) {
-      console.error("UNABLE TO REACH SUPABASE OR MISSING SCHEMA. Defending with 'memory' (highly stable in-memory simulated database mode):", err.message);
-      dbMode = 'memory';
-    }
-  } else {
-    console.warn("No Supabase configuration. Database mode defaults to 'memory' (resilient fallback mode).");
+// Asynchronously probe Supabase database endpoint — called on startup AND lazily on each request if not yet connected.
+async function verifyDatabaseConnectivity(): Promise<boolean> {
+  if (!supabase) {
+    console.warn("No Supabase configuration. Database mode defaults to 'memory'.");
     dbMode = 'memory';
+    return false;
   }
+  try {
+    console.log("Probing Supabase database connectivity...");
+    const probePromise = supabase.from('users').select('id').limit(1);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Supabase connection probe timed out (5s)")), 5000)
+    );
+    const res: any = await Promise.race([probePromise, timeoutPromise]);
+    if (res && res.error) {
+      throw new Error(`Supabase query failed: ${res.error.message}`);
+    }
+    console.log("✅ Supabase connection validated. DB mode = 'supabase'.");
+    dbMode = 'supabase';
+    lastSupabaseProbe = Date.now();
+    return true;
+  } catch (err: any) {
+    console.error("❌ SUPABASE PROBE FAILED:", err.message);
+    dbMode = 'memory';
+    return false;
+  }
+}
+
+// Ensure Supabase is connected — lazy reconnect on serverless cold-start
+async function ensureSupabaseConnected(): Promise<boolean> {
+  if (dbMode === 'supabase') return true;
+  // If we have credentials but are in memory mode, try to reconnect (max once every 10s)
+  if (supabase && (Date.now() - lastSupabaseProbe > 10000)) {
+    console.log("[Reconnect] Attempting lazy Supabase reconnection...");
+    return await verifyDatabaseConnectivity();
+  }
+  return false;
 }
 
 verifyDatabaseConnectivity().catch(err => {
@@ -1062,20 +1076,34 @@ async function callMemoryImplementation(prop: string, args: any[]): Promise<any>
   }
 }
 
-// Resilient database engine client router with automatic healing fallback
+// Resilient database engine client router — tries Supabase first, falls back to memory PER-CALL (never permanently)
 const db = new Proxy(rawDb, {
   get(target: any, prop: string) {
     return async function (...args: any[]) {
+      // Lazy reconnect: if we're in memory mode but have Supabase credentials, try reconnecting
+      await ensureSupabaseConnected();
+
       if (dbMode === 'supabase') {
         try {
           // Attempt using real Supabase client
-          return await target[prop].apply(target, args);
+          const result = await target[prop].apply(target, args);
+          return result;
         } catch (err: any) {
-          console.error(`[BiblioSphere Self-Healing] Supabase API Exception on 'db.${prop}'. Dynamically fallback to memory engine:`, err.message || err);
-          dbMode = 'memory';
+          // Log the error but DO NOT permanently switch to memory mode
+          console.error(`[DB] Supabase error on 'db.${prop}':`, err.message || err);
+          if (supabase) {
+            // If Supabase is explicitly configured, throw error to avoid silent data loss
+            throw new Error(`Erreur critique de base de données Supabase sur '${prop}': ${err.message || err}`);
+          }
+          console.warn(`[DB] Falling back to memory for THIS call only. Supabase will be retried on next call.`);
+          // Do NOT set dbMode = 'memory' here — let the next call retry Supabase
           return await callMemoryImplementation(prop, args);
         }
       } else {
+        if (supabase) {
+          // If Supabase is configured but we are in memory mode, it means connection/probe is failing
+          throw new Error(`La base de données Supabase est configurée mais actuellement inaccessible. Impossible d'exécuter '${prop}'.`);
+        }
         // Run in local memory simulation mode
         return await callMemoryImplementation(prop, args);
       }
@@ -1098,60 +1126,79 @@ api.get('/auth/check-admin', asyncHandler(async (req, res) => {
   return res.json({ adminExists: false });
 }));
 
-api.post('/auth/register', async (req, res) => {
+api.post('/auth/register', asyncHandler(async (req, res) => {
+  const { firstname, lastname, email, password, phone, address, membership_type, role } = req.body;
+  
+  console.log(`[REGISTER] Attempt: email=${email}, dbMode=${dbMode}, supabaseReady=${!!supabase}`);
+  
+  if (!firstname || !lastname || !email || !password) {
+    return res.status(400).json({ error: "Tous les champs obligatoires doivent être remplis." });
+  }
+
+  const userRole = role || 'member';
+
+  // Ensure Supabase is connected before critical write operation
+  await ensureSupabaseConnected();
+  console.log(`[REGISTER] DB mode after reconnect check: ${dbMode}`);
+
+  // Check for unique email
+  const existing = await db.getUserByEmail(email);
+  if (existing) {
+    return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
+  }
+
+  // Normalize membership_type to match DB CHECK constraint: ('Classic', 'Premium', 'VIP Diamond')
+  const validMemberships = ['Classic', 'Premium', 'VIP Diamond'];
+  let safeMembership = membership_type || 'Standard';
+  if (safeMembership === 'Standard') safeMembership = 'Classic';
+  if (!validMemberships.includes(safeMembership)) safeMembership = 'Classic';
+  // Note: rawDb.addUser also does this mapping, but we secure it here too for defense-in-depth
+
+  const newUser: User = {
+    id: users.length + 1,
+    firstname,
+    lastname,
+    email,
+    phone: phone || '',
+    address: address || '',
+    membership_type: safeMembership === 'Classic' ? 'Standard' : safeMembership as any,
+    status: 'active',
+    role: userRole,
+    password_hash: password
+  };
+
+  // Register in DB companion
+  const savedUser = await db.addUser(newUser);
+  console.log(`[REGISTER] User saved: id=${savedUser.id}, dbMode=${dbMode}`);
+
+  // Auto Create subscription (for local memory, DB seeding covers real scenarios)
+  const start = new Date();
+  const expire = new Date();
+  expire.setFullYear(start.getFullYear() + 1);
+
+  subscriptions.push({
+    id: subscriptions.length + 1,
+    user_id: savedUser.id,
+    type: savedUser.membership_type,
+    starts_at: start.toISOString(),
+    expires_at: expire.toISOString(),
+    status: 'active'
+  });
+
+  // Log action (non-blocking — don't let audit failure break registration)
   try {
-    const { firstname, lastname, email, password, phone, address, membership_type, role } = req.body;
-    if (!firstname || !lastname || !email || !password) {
-      return res.status(400).json({ error: "Tous les champs obligatoires doivent être remplis." });
-    }
-
-    const userRole = role || 'member';
-
-    // Check for unique email
-    const existing = await db.getUserByEmail(email);
-    if (existing) {
-      return res.status(400).json({ error: "Cet e-mail est déjà associé à un compte." });
-    }
-
-    const newUser: User = {
-      id: users.length + 1,
-      firstname,
-      lastname,
-      email,
-      phone: phone || '',
-      address: address || '',
-      membership_type: membership_type || 'Standard',
-      status: 'active',
-      role: userRole,
-      password_hash: password
-    };
-
-    // Register in DB companion
-    const savedUser = await db.addUser(newUser);
-
-    // Auto Create subscription (for local memory, DB seeding covers real scenarios)
-    const start = new Date();
-    const expire = new Date();
-    expire.setFullYear(start.getFullYear() + 1);
-
-    subscriptions.push({
-      id: subscriptions.length + 1,
-      user_id: savedUser.id,
-      type: savedUser.membership_type,
-      starts_at: start.toISOString(),
-      expires_at: expire.toISOString(),
-      status: 'active'
-    });
-
-    // Log action
     await db.addAuditLog({
       user: "Système",
       action: "Inscription de compte",
       target: `${savedUser.firstname} ${savedUser.lastname} (${savedUser.role.toUpperCase()})`,
       timestamp: new Date().toISOString()
     });
+  } catch (auditErr) {
+    console.error("[REGISTER] Audit log failed (non-blocking):", auditErr);
+  }
 
-    // Welcome Notification
+  // Welcome Notification (non-blocking — don't let notification failure break registration)
+  try {
     await db.addNotification({
       user_id: savedUser.id,
       title: "Compte créé avec succès !",
@@ -1160,13 +1207,13 @@ api.post('/auth/register', async (req, res) => {
       is_read: false,
       created_at: new Date().toISOString()
     });
-
-    return res.json({ token: "sanctum_mock_token_" + savedUser.id, user: savedUser });
-  } catch (err: any) {
-    console.error("Critical error in /auth/register:", err);
-    return res.status(500).json({ error: err.message || "Erreur interne lors de la création du compte." });
+  } catch (notifErr) {
+    console.error("[REGISTER] Welcome notification failed (non-blocking):", notifErr);
   }
-});
+
+  console.log(`[REGISTER] ✅ Success: ${savedUser.email} (id=${savedUser.id})`);
+  return res.json({ token: "sanctum_mock_token_" + savedUser.id, user: savedUser });
+}));
 
 api.post('/auth/login', asyncHandler(async (req, res) => {
   const { email, password } = req.body;
